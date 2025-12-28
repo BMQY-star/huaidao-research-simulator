@@ -138,11 +138,12 @@ app.post('/api/students', async (req, res) => {
   try {
     console.log('[API] POST /api/students', new Date().toISOString())
     const generated = await generateStudentPersonas(payload)
-    if (payload.mode === 'recruit' && currentStudents.length) {
-      currentStudents = [...currentStudents, ...generated]
-    } else {
-      currentStudents = generated
+    if (payload.mode === 'recruit') {
+      currentStudents = currentStudents.length ? [...currentStudents, ...generated] : generated
+      res.json(generated)
+      return
     }
+    currentStudents = generated
     res.json(currentStudents)
   } catch (error) {
     console.error('Student generation failed', error)

@@ -816,59 +816,26 @@ const applyMentorInfluence = (mentee: StudentPersona, mentor: StudentPersona) =>
 };
 
 const buildMentorshipPairs = (students: StudentPersona[]) => {
-  const candidates = students
-    .filter((student) => !student.isYoungTeacher && student.studentType !== 'YOUNG_TEACHER')
-    .sort((a, b) => {
-      if (a.year !== b.year) return b.year - a.year;
-      return b.talent - a.talent;
-    });
-
-  const mentees = [...candidates].sort((a, b) => {
-    if (a.year !== b.year) return a.year - b.year;
-    return a.diligence - b.diligence;
-  });
-
+  const studentIds = new Set(students.map((student) => student.id));
   const pairs: Array<{ mentorId: string; menteeId: string }> = [];
   const usedMentors = new Set<string>();
-  const usedMentees = new Set<string>();
-  const studentMap = new Map(students.map((student) => [student.id, student]));
 
-  mentees.forEach((mentee) => {
-    if (!mentee.mentorId) return;
-    const mentor = studentMap.get(mentee.mentorId);
-    if (!mentor || mentor.id === mentee.id) return;
-    pairs.push({ mentorId: mentor.id, menteeId: mentee.id });
-    usedMentors.add(mentor.id);
-    usedMentees.add(mentee.id);
-  });
-
-  mentees.forEach((mentee) => {
-    if (usedMentees.has(mentee.id)) return;
-    const mentor = candidates.find(
-      (candidate) => candidate.id !== mentee.id && !usedMentors.has(candidate.id),
-    );
-    if (!mentor) return;
-    pairs.push({ mentorId: mentor.id, menteeId: mentee.id });
-    usedMentors.add(mentor.id);
+  students.forEach((mentee) => {
+    const mentorId = mentee.mentorId;
+    if (!mentorId) return;
+    if (mentorId === mentee.id) return;
+    if (!studentIds.has(mentorId)) return;
+    if (usedMentors.has(mentorId)) return;
+    pairs.push({ mentorId, menteeId: mentee.id });
+    usedMentors.add(mentorId);
   });
 
   return pairs;
 };
 
-const assignMentorships = (students: StudentPersona[]) => {
-  const pairs = buildMentorshipPairs(students);
-  const menteeById = new Map(pairs.map((pair) => [pair.menteeId, pair.mentorId]));
-  return students.map((student) => {
-    const mentorId = menteeById.get(student.id);
-    if (!mentorId) {
-      return { ...student, isBeingMentored: false, mentorId: undefined };
-    }
-    return { ...student, isBeingMentored: true, mentorId };
-  });
-};
-
 const applyMentorshipInfluence = (students: StudentPersona[]) => {
   const pairs = buildMentorshipPairs(students);
+  const menteeIds = new Set(pairs.map((pair) => pair.menteeId));
   const studentMap = new Map(students.map((student) => [student.id, { ...student }]));
 
   pairs.forEach(({ mentorId, menteeId }) => {
@@ -882,7 +849,7 @@ const applyMentorshipInfluence = (students: StudentPersona[]) => {
   });
 
   return Array.from(studentMap.values()).map((student) => {
-    if (pairs.some((pair) => pair.menteeId === student.id)) return student;
+    if (menteeIds.has(student.id)) return student;
     return { ...student, isBeingMentored: false, mentorId: undefined };
   });
 };
@@ -2022,7 +1989,7 @@ function App() {
         }
         return normalizeStudentTraits(adjusted);
       });
-      return assignMentorships(normalized);
+      return normalized.map((student) => ({ ...student, isBeingMentored: false, mentorId: undefined }));
     },
     [stats.year, stats.quarter],
   );
