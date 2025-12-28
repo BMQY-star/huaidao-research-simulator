@@ -1525,6 +1525,24 @@ function App() {
     ]);
   }, []);
 
+  useEffect(() => {
+    if (stage !== 'briefing') return;
+    if (teamMembers.length < 2) return;
+    const seen = new Set<string>();
+    let removed = 0;
+    const deduped = teamMembers.filter((student) => {
+      if (seen.has(student.id)) {
+        removed += 1;
+        return false;
+      }
+      seen.add(student.id);
+      return true;
+    });
+    if (!removed) return;
+    setTeamMembers(deduped);
+    pushEvent('数据修复', `已清理 ${removed} 个重复学生条目。`);
+  }, [stage, teamMembers, pushEvent]);
+
   const handleOpenDecisionQueue = useCallback(() => {
     if (!pendingDecisions.length) return;
     setActiveDecisionId(pendingDecisions[0].id);
@@ -2306,6 +2324,19 @@ function App() {
     setSelectedMentorId(null);
   };
 
+  const handleClearMentorships = () => {
+    if (!teamMembers.some((student) => student.mentorId)) {
+      setTeamMessage('当前没有任何指导关系。');
+      return;
+    }
+    const confirmed = window.confirm('将清空所有学生的指导关系，确定吗？');
+    if (!confirmed) return;
+    setSelectedMentorId(null);
+    setTeamMembers((prev) => prev.map((student) => ({ ...student, isBeingMentored: false, mentorId: undefined })));
+    setTeamMessage('已清空全部指导关系。');
+    pushEvent('导师分配', '已清空全部指导关系。');
+  };
+
   const pickReaction = (reactions: string[]) =>
     reactions.length ? reactions[Math.floor(Math.random() * reactions.length)] : '';
 
@@ -2853,6 +2884,14 @@ function App() {
                       disabled={!canRecruitThisQuarter || teamLoading}
                     >
                       招募学术
+                    </button>
+                    <button
+                      className="ghost"
+                      type="button"
+                      onClick={handleClearMentorships}
+                      disabled={!teamMembers.some((student) => student.mentorId) || teamLoading}
+                    >
+                      清空指导
                     </button>
                   </div>
                 </div>
