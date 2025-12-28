@@ -87,6 +87,26 @@ type ResearchProject = {
   completed: boolean;
 };
 
+type PaperVenueType = 'conference' | 'journal';
+type PaperVenueTier = 'A' | 'B' | 'C';
+type ProjectPaperStatus = 'awaitingVenue' | 'underReview' | 'awaitingRevision' | 'accepted' | 'rejected';
+
+type ProjectPaper = {
+  id: string;
+  projectId: string;
+  projectTitle: string;
+  leadStudentId: string | null;
+  venueType?: PaperVenueType;
+  venueTier?: PaperVenueTier;
+  status: ProjectPaperStatus;
+  submittedYear?: number;
+  submittedQuarter?: MentorStats['quarter'];
+  decisionDueYear?: number;
+  decisionDueQuarter?: MentorStats['quarter'];
+  revisionRound: number;
+  lastRevisionKind?: 'minor' | 'major';
+};
+
 type GrantType = '国自然' | '国社科';
 type GrantState = {
   type: GrantType;
@@ -191,7 +211,7 @@ const resolveStudentTraits = (traits: string[] | undefined) => {
   const subTraits = uniqueTraits.filter((traitId) => studentTraitById.get(traitId)?.category === 'sub');
   const desiredSubCount = Math.random() < 0.5 ? 2 : 3;
 
-  let resolvedMain = mainTrait ?? pickWeightedTrait('main', []);
+  const resolvedMain = mainTrait ?? pickWeightedTrait('main', []);
   const resolvedSubs: string[] = [];
   if (subTraits.length) {
     subTraits.forEach((traitId) => {
@@ -213,6 +233,529 @@ const resolveStudentTraits = (traits: string[] | undefined) => {
 
 const clampValue = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
+
+type LogEvent = { title: string; detail: string };
+
+const buildActiveProjectCountByStudentId = (projects: ResearchProject[]) => {
+  const counts = new Map<string, number>();
+  projects.forEach((project) => {
+    if (project.completed) return;
+    project.assignedStudentIds.forEach((studentId) => {
+      counts.set(studentId, (counts.get(studentId) ?? 0) + 1);
+    });
+  });
+  return counts;
+};
+
+const calcPaperProgressGain = (student: StudentPersona, activeProjectCount: number) => {
+  const base = 3;
+  const diligenceBoost = Math.round(student.diligence / 35);
+  const talentBoost = Math.round(student.talent / 45);
+  const mentorBoost = student.isBeingMentored ? 1 : 0;
+  const projectBoost = Math.min(activeProjectCount, 2);
+  const stressPenalty = Math.round(student.stress / 50);
+  const lowMentalPenalty = student.mentalState < 50 ? 1 : 0;
+
+  return clampValue(
+    base +
+      diligenceBoost +
+      talentBoost +
+      mentorBoost +
+      projectBoost -
+      stressPenalty -
+      lowMentalPenalty,
+    0,
+    12,
+  );
+};
+
+const calcPaperDecisionChance = (mentorStats: MentorStats) =>
+  clampValue(0.25 + mentorStats.admin.value / 250, 0.25, 0.75);
+
+const calcPaperAcceptanceChance = (student: StudentPersona, mentorStats: MentorStats) => {
+  const base = 0.05;
+  const academiaBoost = mentorStats.academia.value / 500;
+  const studentBoost = (student.talent + student.diligence) / 1200;
+  const mentalBoost = (student.mentalState - 50) / 600;
+  const stressPenalty = student.stress / 600;
+
+  return clampValue(base + academiaBoost + studentBoost + mentalBoost - stressPenalty, 0.08, 0.55);
+};
+
+const settleResearchPapers = ({
+  students,
+  mentorStats,
+  projects,
+}: {
+  students: StudentPersona[];
+  mentorStats: MentorStats;
+  projects: ResearchProject[];
+}) => {
+  const events: LogEvent[] = [];
+  const reputationDelta = 0;
+  const fundingDelta = 0;
+  let decisionStudentId: string | null = null;
+
+  const activeProjectCounts = buildActiveProjectCountByStudentId(projects);
+  const decisionChance = calcPaperDecisionChance(mentorStats);
+
+  const updatedStudents = students.map((student) => {
+    const activeProjectCount = activeProjectCounts.get(student.id) ?? 0;
+    const progressGain = calcPaperProgressGain(student, activeProjectCount);
+    const combinedProgress = clampValue(student.contribution + progressGain, 0, 250);
+    const submittedCount = Math.floor(combinedProgress / 100);
+    const remainder = combinedProgress - submittedCount * 100;
+
+    if (!submittedCount) {
+      return { ...student, contribution: remainder };
+    }
+
+    events.push({
+      title: '论文投稿',
+      detail: `${student.name} 完成 ${submittedCount} 篇稿件并进入外审（在投 +${submittedCount}）。`,
+    });
+
+    return {
+      ...student,
+      contribution: remainder,
+      pendingPapers: student.pendingPapers + submittedCount,
+      mentalState: clampValue(student.mentalState - 2 * submittedCount, 0, 100),
+      stress: clampValue(student.stress + 3 * submittedCount, 0, 100),
+    };
+  });
+
+  const decisionCandidates = updatedStudents.filter(
+    (student) => student.pendingPapers > 0 && Math.random() < decisionChance,
+  );
+  if (decisionCandidates.length) {
+    const totalWeight = decisionCandidates.reduce((sum, student) => sum + student.pendingPapers, 0);
+    let cursor = Math.random() * totalWeight;
+    for (const student of decisionCandidates) {
+      cursor -= student.pendingPapers;
+      if (cursor <= 0) {
+        decisionStudentId = student.id;
+        break;
+      }
+    }
+    if (!decisionStudentId) decisionStudentId = decisionCandidates[0].id;
+  }
+
+  return { updatedStudents, events, reputationDelta, fundingDelta, decisionStudentId };
+};
+
+const toQuarterIndex = (year: number, quarter: MentorStats['quarter']) => (year - 1) * 4 + (quarter - 1);
+
+const addQuarters = (
+  stamp: { year: number; quarter: MentorStats['quarter'] },
+  offset: number,
+): { year: number; quarter: MentorStats['quarter'] } => {
+  const base = toQuarterIndex(stamp.year, stamp.quarter);
+  const next = base + offset;
+  const nextYear = Math.floor(next / 4) + 1;
+  const nextQuarter = ((next % 4) + 1) as MentorStats['quarter'];
+  return { year: nextYear, quarter: nextQuarter };
+};
+
+const isQuarterReached = (
+  current: { year: number; quarter: MentorStats['quarter'] },
+  target: { year: number; quarter: MentorStats['quarter'] },
+) => toQuarterIndex(current.year, current.quarter) >= toQuarterIndex(target.year, target.quarter);
+
+const pickProjectLeadStudentId = (project: ResearchProject, students: StudentPersona[]) => {
+  const assigned = project.assignedStudentIds
+    .map((id) => students.find((student) => student.id === id))
+    .filter(Boolean) as StudentPersona[];
+  if (!assigned.length) return null;
+  return assigned.reduce((best, current) => {
+    const bestScore = best.diligence + best.talent;
+    const currentScore = current.diligence + current.talent;
+    return currentScore > bestScore ? current : best;
+  }).id;
+};
+
+const buildProjectVenueDecision = ({
+  projectPaperId,
+  projectId,
+  projectTitle,
+  year,
+  quarter,
+}: {
+  projectPaperId: string;
+  projectId: string;
+  projectTitle: string;
+  year: number;
+  quarter: MentorStats['quarter'];
+}): DecisionEvent => ({
+  id: `dec-project-venue-${projectPaperId}`,
+  kind: 'projectVenue',
+  title: '成果投稿策略',
+  prompt: `课题「${projectTitle}」已结题。请选择本次投稿的期刊/会议等级：`,
+  createdYear: year,
+  createdQuarter: quarter,
+  context: { projectPaperId, projectId },
+  options: [
+    {
+      id: 'conf-a',
+      label: '投顶会（A）',
+      hint: '风险高 · 收益高 · 出结果快',
+      outcome: '已锁定顶会赛道，准备冲一把。',
+      effects: { stats: { funding: -6000, morale: -1 } },
+      meta: { venueType: 'conference', venueTier: 'A', reviewQuarters: 1, reputationReward: 3, fundingReward: 12000 },
+    },
+    {
+      id: 'jour-b',
+      label: '投一区期刊（B）',
+      hint: '稳中求进 · 周期更长',
+      outcome: '已选择一区期刊，开始按期刊节奏推进。',
+      effects: { stats: { funding: -4500, morale: -1 } },
+      meta: { venueType: 'journal', venueTier: 'B', reviewQuarters: 2, reputationReward: 2, fundingReward: 8000 },
+    },
+    {
+      id: 'safe-c',
+      label: '投稳妥刊会（C）',
+      hint: '成功率更高 · 收益较低',
+      outcome: '先把成果稳稳落地，再考虑下一轮冲刺。',
+      effects: { stats: { funding: -2000, morale: 0 } },
+      meta: { venueType: 'conference', venueTier: 'C', reviewQuarters: 1, reputationReward: 1, fundingReward: 5000 },
+    },
+  ],
+});
+
+const buildProjectRevisionDecision = ({
+  projectPaperId,
+  projectId,
+  projectTitle,
+  revisionKind,
+  year,
+  quarter,
+}: {
+  projectPaperId: string;
+  projectId: string;
+  projectTitle: string;
+  revisionKind: 'minor' | 'major';
+  year: number;
+  quarter: MentorStats['quarter'];
+}): DecisionEvent => ({
+  id: `dec-project-revision-${projectPaperId}-${revisionKind}`,
+  kind: 'projectRevision',
+  title: revisionKind === 'minor' ? '外审意见：小修' : '外审意见：大修',
+  prompt:
+    revisionKind === 'minor'
+      ? `课题「${projectTitle}」收到小修意见。你打算怎么处理？`
+      : `课题「${projectTitle}」收到大修意见。你打算怎么处理？`,
+  createdYear: year,
+  createdQuarter: quarter,
+  context: { projectPaperId, projectId, revisionKind },
+  options:
+    revisionKind === 'minor'
+      ? [
+          {
+            id: 'revise',
+            label: '按意见小修并回投',
+            hint: '成本低 · 通过率高',
+            outcome: '已安排小修回投，等待编辑确认。',
+            effects: { stats: { funding: -800, morale: -1 } },
+            meta: { action: 'revise', reviewQuarters: 1, acceptBonus: 0.12 },
+          },
+          {
+            id: 'downgrade',
+            label: '小改后降档改投',
+            hint: '更稳 · 收益下降',
+            outcome: '已调整策略，选择更稳的刊会。',
+            effects: { stats: { funding: -1200, morale: -1 } },
+            meta: { action: 'downgrade', reviewQuarters: 1 },
+          },
+          {
+            id: 'withdraw',
+            label: '暂时撤稿，先补实验',
+            hint: '短期止损 · 课题士气下降',
+            outcome: '已撤稿，课题组需要重新规划。',
+            effects: { stats: { morale: -3 } },
+            meta: { action: 'withdraw' },
+          },
+        ]
+      : [
+          {
+            id: 'major',
+            label: '硬刚大修并回投',
+            hint: '成本高 · 仍有不确定性',
+            outcome: '已开启大修冲刺，团队进入加班模式。',
+            effects: { stats: { funding: -2600, morale: -2 } },
+            meta: { action: 'revise', reviewQuarters: 2, acceptBonus: 0.18 },
+          },
+          {
+            id: 'downgrade',
+            label: '降档改投（换赛道）',
+            hint: '更稳 · 但浪费部分周期',
+            outcome: '已选择降档改投，重新进入外审。',
+            effects: { stats: { funding: -1800, morale: -1 } },
+            meta: { action: 'downgrade', reviewQuarters: 1 },
+          },
+          {
+            id: 'withdraw',
+            label: '放弃当前稿件',
+            hint: '止损 · 但士气受挫',
+            outcome: '已放弃当前稿件，准备把经验投入下一题。',
+            effects: { stats: { morale: -4 } },
+            meta: { action: 'withdraw' },
+          },
+        ],
+});
+
+const formatVenueLabel = (paper: Pick<ProjectPaper, 'venueType' | 'venueTier'>) => {
+  const typeLabel = paper.venueType === 'journal' ? '期刊' : paper.venueType === 'conference' ? '会议' : '刊会';
+  const tierLabel = paper.venueTier ?? '?';
+  return `${typeLabel} ${tierLabel}`;
+};
+
+const rewardsByTier: Record<PaperVenueTier, { reputation: number; funding: number }> = {
+  A: { reputation: 3, funding: 12000 },
+  B: { reputation: 2, funding: 8000 },
+  C: { reputation: 1, funding: 5000 },
+};
+
+const settleProjectPapers = ({
+  projectPapers,
+  students,
+  mentorStats,
+  currentStamp,
+  decisionStamp,
+}: {
+  projectPapers: ProjectPaper[];
+  students: StudentPersona[];
+  mentorStats: MentorStats;
+  currentStamp: { year: number; quarter: MentorStats['quarter'] };
+  decisionStamp: { year: number; quarter: MentorStats['quarter'] };
+}): {
+  updatedPapers: ProjectPaper[];
+  updatedStudents: StudentPersona[];
+  statDelta: StatDelta;
+  decisions: DecisionEvent[];
+  events: LogEvent[];
+} => {
+  const events: LogEvent[] = [];
+  const decisions: DecisionEvent[] = [];
+  const statDelta: StatDelta = {};
+  const studentDeltaById: Record<string, StudentDelta> = {};
+
+  const addStatDelta = (key: keyof StatDelta, amount: number) => {
+    statDelta[key] = (statDelta[key] ?? 0) + amount;
+  };
+
+  const mergeStudentDelta = (studentId: string, delta: StudentDelta) => {
+    const current = studentDeltaById[studentId] ?? {};
+    studentDeltaById[studentId] = {
+      diligence: (current.diligence ?? 0) + (delta.diligence ?? 0),
+      talent: (current.talent ?? 0) + (delta.talent ?? 0),
+      luck: (current.luck ?? 0) + (delta.luck ?? 0),
+      stress: (current.stress ?? 0) + (delta.stress ?? 0),
+      mentalState: (current.mentalState ?? 0) + (delta.mentalState ?? 0),
+      contribution: (current.contribution ?? 0) + (delta.contribution ?? 0),
+      pendingPapers: (current.pendingPapers ?? 0) + (delta.pendingPapers ?? 0),
+      totalPapers: (current.totalPapers ?? 0) + (delta.totalPapers ?? 0),
+    };
+  };
+
+  const resolveLeadStudent = (paper: ProjectPaper) =>
+    paper.leadStudentId ? students.find((student) => student.id === paper.leadStudentId) ?? null : null;
+
+  const baseAcceptance: Record<PaperVenueTier, number> = { A: 0.18, B: 0.28, C: 0.42 };
+  const baseRevision: Record<PaperVenueTier, number> = { A: 0.55, B: 0.45, C: 0.35 };
+  const baseMajorRevision: Record<PaperVenueTier, number> = { A: 0.65, B: 0.5, C: 0.35 };
+
+  const updatedPapers: ProjectPaper[] = projectPapers.map((paper): ProjectPaper => {
+    if (paper.status !== 'underReview') return paper;
+    if (!paper.decisionDueYear || !paper.decisionDueQuarter) return paper;
+    if (!isQuarterReached(currentStamp, { year: paper.decisionDueYear, quarter: paper.decisionDueQuarter })) return paper;
+
+    const venueTier = isPaperVenueTier(paper.venueTier) ? paper.venueTier : 'C';
+    const lead = resolveLeadStudent(paper);
+    const academiaBoost = mentorStats.academia.value / 260;
+    const leadBoost = lead ? (lead.talent + lead.diligence) / 650 : 0;
+    const revisionBoost = paper.revisionRound * 0.06;
+    const stressPenalty = lead ? lead.stress / 650 : 0;
+
+    const acceptChance = clampValue(baseAcceptance[venueTier] + academiaBoost + leadBoost + revisionBoost - stressPenalty, 0.06, 0.85);
+    let revisionChance = clampValue(baseRevision[venueTier] - paper.revisionRound * 0.08, 0.15, 0.75);
+    if (acceptChance + revisionChance > 0.95) revisionChance = 0.95 - acceptChance;
+
+    const roll = Math.random();
+    const venueLabel = formatVenueLabel(paper);
+
+    if (roll < acceptChance) {
+      const reward = rewardsByTier[venueTier];
+      addStatDelta('reputation', reward.reputation);
+      addStatDelta('funding', reward.funding);
+      addStatDelta('morale', 2);
+      events.push({
+        title: '课题论文接收',
+        detail: `课题「${paper.projectTitle}」投稿至 ${venueLabel} 已接收（声望 +${reward.reputation}，经费 +￥${reward.funding.toLocaleString()}）。`,
+      });
+      if (paper.leadStudentId) {
+        mergeStudentDelta(paper.leadStudentId, { pendingPapers: -1, totalPapers: 1, mentalState: 4, stress: -5 });
+      }
+      return {
+        ...paper,
+        status: 'accepted',
+        decisionDueYear: undefined,
+        decisionDueQuarter: undefined,
+      };
+    }
+
+    if (roll < acceptChance + revisionChance) {
+      const majorChance = clampValue(baseMajorRevision[venueTier] - paper.revisionRound * 0.18, 0.15, 0.75);
+      const revisionKind = Math.random() < majorChance ? 'major' : 'minor';
+      events.push({
+        title: '课题论文返修',
+        detail: `课题「${paper.projectTitle}」投稿至 ${venueLabel} 收到${revisionKind === 'minor' ? '小修' : '大修'}意见。`,
+      });
+      if (paper.leadStudentId) {
+        mergeStudentDelta(paper.leadStudentId, { mentalState: -2, stress: 3 });
+      }
+      decisions.push(
+        buildProjectRevisionDecision({
+          projectPaperId: paper.id,
+          projectId: paper.projectId,
+          projectTitle: paper.projectTitle,
+          revisionKind,
+          year: decisionStamp.year,
+          quarter: decisionStamp.quarter,
+        }),
+      );
+      return {
+        ...paper,
+        status: 'awaitingRevision',
+        lastRevisionKind: revisionKind,
+        decisionDueYear: undefined,
+        decisionDueQuarter: undefined,
+      };
+    }
+
+    addStatDelta('morale', -2);
+    events.push({
+      title: '课题论文拒稿',
+      detail: `课题「${paper.projectTitle}」投稿至 ${venueLabel} 遭到拒稿。`,
+    });
+    if (paper.leadStudentId) {
+      mergeStudentDelta(paper.leadStudentId, { pendingPapers: -1, mentalState: -5, stress: 4 });
+    }
+
+    return {
+      ...paper,
+      status: 'rejected',
+      decisionDueYear: undefined,
+      decisionDueQuarter: undefined,
+    };
+  });
+
+  const updatedStudents = students.map((student) => {
+    const delta = studentDeltaById[student.id];
+    if (!delta) return student;
+    return applyStudentDelta(student, delta);
+  });
+
+  return { updatedPapers, updatedStudents, statDelta, decisions, events };
+};
+
+const buildStudentPaperFallbackDecision = ({
+  student,
+  mentorStats,
+  year,
+  quarter,
+}: {
+  student: StudentPersona;
+  mentorStats: MentorStats;
+  year: number;
+  quarter: MentorStats['quarter'];
+}): DecisionEvent => {
+  const baseAcceptChance = calcPaperAcceptanceChance(student, mentorStats);
+
+  type FallbackPaperOutcome = { outcome: string; effects: { stats: StatDelta; student: StudentDelta } };
+
+  const sampleOutcome = (tier: PaperVenueTier): FallbackPaperOutcome => {
+    const tierMultiplier = tier === 'A' ? 0.75 : tier === 'B' ? 1 : 1.25;
+    const acceptChance = clampValue(baseAcceptChance * tierMultiplier, 0.05, 0.85);
+    const reviseChance = tier === 'A' ? 0.45 : tier === 'B' ? 0.35 : 0.25;
+    const roll = Math.random();
+
+    if (roll < acceptChance) {
+      return {
+        outcome: '稿件顺利被接收，团队士气大涨。',
+        effects: {
+          stats: { reputation: tier === 'A' ? 2 : 1, morale: 2, funding: 3000 },
+          student: { pendingPapers: -1, totalPapers: 1, mentalState: 6, stress: -4 },
+        },
+      };
+    }
+
+    if (roll < acceptChance + reviseChance) {
+      return {
+        outcome: '收到外审返修意见，稿件仍在流程中。',
+        effects: {
+          stats: { funding: -800, morale: -1 },
+          student: { mentalState: -2, stress: 4, pendingPapers: 0 },
+        },
+      };
+    }
+
+    return {
+      outcome: '不幸退稿，需要调整策略再战。',
+      effects: {
+        stats: { morale: -2 },
+        student: { pendingPapers: -1, mentalState: -4, stress: 3 },
+      },
+    };
+  };
+
+  const optionA = sampleOutcome('A');
+  const optionB = sampleOutcome('B');
+  let optionC = sampleOutcome('C');
+  let safety = 0;
+  while ((optionC.effects?.student?.pendingPapers ?? 0) === 0 && safety < 6) {
+    safety += 1;
+    optionC = sampleOutcome('C');
+  }
+  if ((optionC.effects?.student?.pendingPapers ?? 0) === 0) {
+    optionC = {
+      outcome: '稳妥方案落地，稿件结束流程。',
+      effects: {
+        stats: { reputation: 1, morale: 1 },
+        student: { pendingPapers: -1, totalPapers: Math.random() < 0.6 ? 1 : 0, mentalState: 3, stress: -2 },
+      },
+    };
+  }
+
+  return {
+    id: `dec-student-paper-${student.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    kind: 'studentPaperEvent',
+    title: '学生论文进展',
+    prompt: `${student.name} 有一篇论文到了关键节点：要选择投稿等级/处理返修策略。`,
+    createdYear: year,
+    createdQuarter: quarter,
+    context: { studentId: student.id },
+    options: [
+      {
+        id: 'A',
+        label: '冲 A 档刊会',
+        hint: '风险高 · 潜在收益大',
+        ...optionA,
+      },
+      {
+        id: 'B',
+        label: '投 B 档期刊',
+        hint: '稳中求进 · 周期更长',
+        ...optionB,
+      },
+      {
+        id: 'C',
+        label: '转投 C 档稳妥刊会',
+        hint: '成功率更高 · 收益较低',
+        ...optionC,
+      },
+    ],
+  };
+};
+
 const normalizeStudentTraits = (student: StudentPersona) => {
   const resolvedTraits = resolveStudentTraits(student.traits);
   return { ...student, traits: resolvedTraits };
@@ -630,6 +1173,47 @@ const OnboardingModal = ({ onClose }: OnboardingModalProps) => (
   </div>
 );
 
+type DecisionModalProps = {
+  decision: DecisionEvent;
+  queueCount: number;
+  onClose: () => void;
+  onChoose: (optionId: string) => void;
+};
+
+const DecisionModal = ({ decision, queueCount, onClose, onChoose }: DecisionModalProps) => (
+  <div className="modal-backdrop larger">
+    <div className="decision-modal">
+      <header className="decision-head">
+        <div>
+          <p className="eyebrow small">待处理 {queueCount}</p>
+          <h3>{decision.title}</h3>
+        </div>
+        <button className="icon-button ghost" type="button" onClick={onClose}>
+          稍后处理
+        </button>
+      </header>
+      <div className="decision-body">
+        <p className="decision-prompt">{decision.prompt}</p>
+        <div className="decision-options">
+          {decision.options.map((option) => (
+            <button
+              key={option.id}
+              className="decision-option"
+              type="button"
+              onClick={() => onChoose(option.id)}
+            >
+              <div className="decision-option-main">
+                <strong>{option.label}</strong>
+                {option.hint && <span className="muted-text">{option.hint}</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
 type ProfilePayload = {
   mentor: string;
   biography: string;
@@ -644,6 +1228,109 @@ type EventItem = {
   id: string;
   title: string;
   detail: string;
+};
+
+type StatDelta = Partial<{
+  morale: number;
+  academia: number;
+  admin: number;
+  integrity: number;
+  funding: number;
+  reputation: number;
+}>;
+
+type StudentDelta = Partial<{
+  diligence: number;
+  talent: number;
+  luck: number;
+  stress: number;
+  mentalState: number;
+  contribution: number;
+  pendingPapers: number;
+  totalPapers: number;
+}>;
+
+type DecisionOption = {
+  id: string;
+  label: string;
+  hint?: string;
+  outcome: string;
+  effects?: {
+    stats?: StatDelta;
+    student?: StudentDelta;
+  };
+  meta?: Record<string, unknown>;
+};
+
+type DecisionEvent =
+  | {
+      id: string;
+      kind: 'projectVenue';
+      title: string;
+      prompt: string;
+      options: DecisionOption[];
+      createdYear: number;
+      createdQuarter: MentorStats['quarter'];
+      context: { projectPaperId: string; projectId: string };
+    }
+  | {
+      id: string;
+      kind: 'projectRevision';
+      title: string;
+      prompt: string;
+      options: DecisionOption[];
+      createdYear: number;
+      createdQuarter: MentorStats['quarter'];
+      context: { projectPaperId: string; projectId: string; revisionKind: 'minor' | 'major' };
+    }
+  | {
+      id: string;
+      kind: 'studentPaperEvent';
+      title: string;
+      prompt: string;
+      options: DecisionOption[];
+      createdYear: number;
+      createdQuarter: MentorStats['quarter'];
+      context: { studentId: string };
+    };
+
+const applyMentorDelta = (stats: MentorStats, delta: StatDelta) => ({
+  ...stats,
+  morale: delta.morale ? { ...stats.morale, value: clampValue(stats.morale.value + delta.morale, 0, stats.morale.max) } : stats.morale,
+  academia: delta.academia
+    ? { ...stats.academia, value: clampValue(stats.academia.value + delta.academia, 0, stats.academia.max) }
+    : stats.academia,
+  admin: delta.admin ? { ...stats.admin, value: clampValue(stats.admin.value + delta.admin, 0, stats.admin.max) } : stats.admin,
+  integrity: delta.integrity
+    ? { ...stats.integrity, value: clampValue(stats.integrity.value + delta.integrity, 0, stats.integrity.max) }
+    : stats.integrity,
+  funding: delta.funding ? Math.max(stats.funding + delta.funding, 0) : stats.funding,
+  reputation: delta.reputation ? stats.reputation + delta.reputation : stats.reputation,
+});
+
+const applyStudentDelta = (student: StudentPersona, delta: StudentDelta): StudentPersona => ({
+  ...student,
+  diligence:
+    delta.diligence === undefined ? student.diligence : clampValue(student.diligence + delta.diligence, 0, 100),
+  talent: delta.talent === undefined ? student.talent : clampValue(student.talent + delta.talent, 0, 100),
+  luck: delta.luck === undefined ? student.luck : clampValue(student.luck + delta.luck, 0, 100),
+  stress: delta.stress === undefined ? student.stress : clampValue(student.stress + delta.stress, 0, 100),
+  mentalState:
+    delta.mentalState === undefined ? student.mentalState : clampValue(student.mentalState + delta.mentalState, 0, 100),
+  contribution:
+    delta.contribution === undefined ? student.contribution : clampValue(student.contribution + delta.contribution, 0, 250),
+  pendingPapers:
+    delta.pendingPapers === undefined ? student.pendingPapers : Math.max(student.pendingPapers + delta.pendingPapers, 0),
+  totalPapers:
+    delta.totalPapers === undefined ? student.totalPapers : Math.max(student.totalPapers + delta.totalPapers, 0),
+});
+
+const isPaperVenueType = (value: unknown): value is PaperVenueType => value === 'conference' || value === 'journal';
+const isPaperVenueTier = (value: unknown): value is PaperVenueTier => value === 'A' || value === 'B' || value === 'C';
+
+const downgradeVenueTier = (tier: PaperVenueTier | undefined): PaperVenueTier => {
+  if (tier === 'A') return 'B';
+  return 'C';
 };
 
 const studentTypeLabel: Record<string, string> = {
@@ -740,6 +1427,9 @@ function App() {
   >([]);
   const [selectedMentorId, setSelectedMentorId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ResearchProject[]>(() => storedState?.projects ?? []);
+  const [projectPapers, setProjectPapers] = useState<ProjectPaper[]>(
+    () => storedState?.projectPapers ?? [],
+  );
   const [grantApplications, setGrantApplications] = useState<GrantState[]>(
     () => storedState?.grantApplications ?? [],
   );
@@ -775,6 +1465,48 @@ function App() {
     ];
   });
   const comfortCost = 500;
+  const [pendingDecisions, setPendingDecisions] = useState<DecisionEvent[]>(    
+    () => storedState?.pendingDecisions ?? [],
+  );
+  const [activeDecisionId, setActiveDecisionId] = useState<string | null>(null);
+
+  const activeDecision = useMemo(() => {
+    if (!pendingDecisions.length) return null;
+    if (activeDecisionId) {
+      return pendingDecisions.find((item) => item.id === activeDecisionId) ?? pendingDecisions[0];
+    }
+    return pendingDecisions[0];
+  }, [pendingDecisions, activeDecisionId]);
+
+  const paperSummary = useMemo(
+    () =>
+      teamMembers.reduce(
+        (acc, student) => ({
+          pending: acc.pending + student.pendingPapers,
+          published: acc.published + student.totalPapers,
+        }),
+        { pending: 0, published: 0 },
+      ),
+    [teamMembers],
+  );
+
+  const projectPaperSummary = useMemo(
+    () =>
+      projectPapers.reduce(
+        (acc, paper) => ({
+          ...acc,
+          [paper.status]: acc[paper.status] + 1,
+        }),
+        {
+          awaitingVenue: 0,
+          underReview: 0,
+          awaitingRevision: 0,
+          accepted: 0,
+          rejected: 0,
+        } satisfies Record<ProjectPaperStatus, number>,
+      ),
+    [projectPapers],
+  );
 
   const currentDepartments = useMemo(
     () => departmentsByDiscipline[selectedDiscipline] ?? [],
@@ -794,9 +1526,6 @@ function App() {
     profileData?.recruitmentNeeds?.length
       ? profileData.recruitmentNeeds
       : ['研一学生 · 算法方向', '研一学生 · 数据方向', '研一学生 · 交叉研究方向'];
-  const researchAreas =
-    profileData?.researchAreas?.length ? profileData.researchAreas : [researchFocus, '实验设计', '学术写作'];
-  const quote = profileData?.quote ?? '“把难题拆成每天可执行的一小步。”';
   const motivationText =
     profileData?.motivation ??
     profileData?.quote ??
@@ -828,6 +1557,126 @@ function App() {
       { id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, title, detail },
     ]);
   }, []);
+
+  const handleOpenDecisionQueue = useCallback(() => {
+    if (!pendingDecisions.length) return;
+    setActiveDecisionId(pendingDecisions[0].id);
+  }, [pendingDecisions]);
+
+  const handleDecisionChoose = useCallback(
+    (decision: DecisionEvent, optionId: string) => {
+      const option = decision.options.find((item) => item.id === optionId);
+      if (!option) return;
+
+      pushEvent(decision.title, option.outcome);
+
+      if (option.effects?.stats) {
+        setStats((prev) => applyMentorDelta(prev, option.effects?.stats ?? {}));
+      }
+
+      const studentTargetId = (() => {
+        if (decision.kind === 'studentPaperEvent') return decision.context.studentId;
+        if (decision.kind === 'projectVenue' || decision.kind === 'projectRevision') {
+          return projectPapers.find((paper) => paper.id === decision.context.projectPaperId)?.leadStudentId ?? null;
+        }
+        return null;
+      })();
+
+      if (studentTargetId && option.effects?.student) {
+        setTeamMembers((prev) =>
+          prev.map((student) => (student.id === studentTargetId ? applyStudentDelta(student, option.effects?.student ?? {}) : student)),
+        );
+      }
+
+      if (decision.kind === 'projectVenue') {
+        const venueType = option.meta?.venueType;
+        const venueTier = option.meta?.venueTier;
+        const reviewQuarters = option.meta?.reviewQuarters;
+        if (!isPaperVenueType(venueType) || !isPaperVenueTier(venueTier)) {
+          setTeamMessage('投稿策略数据缺失，已跳过。');
+        } else {
+          const reviewOffset = typeof reviewQuarters === 'number' && reviewQuarters > 0 ? reviewQuarters : 1;
+          const due = addQuarters({ year: stats.year, quarter: stats.quarter }, reviewOffset);
+          setProjectPapers((prev) =>
+            prev.map((paper) =>
+              paper.id === decision.context.projectPaperId
+                ? {
+                    ...paper,
+                    venueType,
+                    venueTier,
+                    status: 'underReview',
+                    submittedYear: stats.year,
+                    submittedQuarter: stats.quarter,
+                    decisionDueYear: due.year,
+                    decisionDueQuarter: due.quarter,
+                  }
+                : paper,
+            ),
+          );
+          if (studentTargetId) {
+            setTeamMembers((prev) =>
+              prev.map((student) =>
+                student.id === studentTargetId
+                  ? applyStudentDelta(student, { pendingPapers: 1, mentalState: -2, stress: 3 })
+                  : student,
+              ),
+            );
+          }
+        }
+      }
+
+      if (decision.kind === 'projectRevision') {
+        const action = option.meta?.action;
+        const reviewQuarters = option.meta?.reviewQuarters;
+        const reviewOffset = typeof reviewQuarters === 'number' && reviewQuarters > 0 ? reviewQuarters : 1;
+        const due = addQuarters({ year: stats.year, quarter: stats.quarter }, reviewOffset);
+
+        setProjectPapers((prev) =>
+          prev.map((paper) => {
+            if (paper.id !== decision.context.projectPaperId) return paper;
+            if (action === 'withdraw') {
+              return { ...paper, status: 'rejected', decisionDueYear: undefined, decisionDueQuarter: undefined };
+            }
+            if (action === 'downgrade') {
+              return {
+                ...paper,
+                venueTier: downgradeVenueTier(paper.venueTier),
+                status: 'underReview',
+                decisionDueYear: due.year,
+                decisionDueQuarter: due.quarter,
+              };
+            }
+            if (action === 'revise') {
+              return {
+                ...paper,
+                status: 'underReview',
+                decisionDueYear: due.year,
+                decisionDueQuarter: due.quarter,
+                revisionRound: paper.revisionRound + 1,
+                lastRevisionKind: decision.context.revisionKind,
+              };
+            }
+            return paper;
+          }),
+        );
+
+        if (action === 'withdraw' && studentTargetId) {
+          setTeamMembers((prev) =>
+            prev.map((student) =>
+              student.id === studentTargetId
+                ? applyStudentDelta(student, { pendingPapers: -1, mentalState: -2, stress: 2 })
+                : student,
+            ),
+          );
+        }
+      }
+
+      const remaining = pendingDecisions.filter((item) => item.id !== decision.id);
+      setPendingDecisions(remaining);
+      setActiveDecisionId(remaining[0]?.id ?? null);
+    },
+    [pendingDecisions, projectPapers, pushEvent, stats.year, stats.quarter],
+  );
 
   const getGrantState = (type: GrantType) =>
     grantApplications.find((item) => item.type === type && item.appliedYear === stats.year);
@@ -918,6 +1767,145 @@ function App() {
     pushEvent('课题创建', `新课题「${next.title}」已进入研究排期。`);
   };
 
+  const queueStudentPaperDecision = useCallback(
+    async (
+      student: StudentPersona,
+      stamp: { year: number; quarter: MentorStats['quarter'] },
+      mentorSnapshot: MentorStats,
+    ) => {
+      const asInt = (value: unknown, min: number, max: number) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+        return Math.round(clampValue(value, min, max));
+      };
+
+      const normalizeStatDelta = (raw: unknown): StatDelta | undefined => {
+        if (!raw || typeof raw !== 'object') return undefined;
+        const obj = raw as Record<string, unknown>;
+        const next: StatDelta = {};
+        const morale = asInt(obj.morale, -6, 6);
+        const academia = asInt(obj.academia, -4, 6);
+        const admin = asInt(obj.admin, -4, 6);
+        const integrity = asInt(obj.integrity, -4, 6);
+        const funding = asInt(obj.funding, -15000, 25000);
+        const reputation = asInt(obj.reputation, -2, 3);
+
+        if (morale) next.morale = morale;
+        if (academia) next.academia = academia;
+        if (admin) next.admin = admin;
+        if (integrity) next.integrity = integrity;
+        if (funding) next.funding = funding;
+        if (reputation) next.reputation = reputation;
+        return Object.keys(next).length ? next : undefined;
+      };
+
+      const normalizeStudentDelta = (raw: unknown): StudentDelta | undefined => {
+        if (!raw || typeof raw !== 'object') return undefined;
+        const obj = raw as Record<string, unknown>;
+        const next: StudentDelta = {};
+        const stress = asInt(obj.stress, -10, 12);
+        const mentalState = asInt(obj.mentalState, -12, 12);
+        const pendingPapers = asInt(obj.pendingPapers, -1, 1);
+        const totalPapers = asInt(obj.totalPapers, 0, 1);
+        const contribution = asInt(obj.contribution, -60, 30);
+
+        if (stress) next.stress = stress;
+        if (mentalState) next.mentalState = mentalState;
+        if (pendingPapers) next.pendingPapers = pendingPapers;
+        if (totalPapers) next.totalPapers = totalPapers;
+        if (contribution) next.contribution = contribution;
+        return Object.keys(next).length ? next : undefined;
+      };
+
+      const buildFromApiPayload = (payload: unknown): DecisionEvent | null => {
+        if (!payload || typeof payload !== 'object') return null;
+        const obj = payload as Record<string, unknown>;
+        const title = String(obj.title ?? '').trim() || '学生论文进展';
+        const prompt = String(obj.prompt ?? '').trim() || `${student.name} 的论文有新进展，需要你拍板。`;
+        const rawOptions = Array.isArray(obj.options) ? (obj.options as unknown[]) : [];
+        const options = rawOptions
+          .map((item, index) => {
+            if (!item || typeof item !== 'object') return null;
+            const optionObj = item as Record<string, unknown>;
+            const id = String(optionObj.id ?? ['A', 'B', 'C'][index] ?? '').trim();
+            const label = String(optionObj.label ?? '').trim();
+            const outcome = String(optionObj.outcome ?? '').trim();
+            if (!id || !label || !outcome) return null;
+            const hint = typeof optionObj.hint === 'string' ? optionObj.hint.trim() : undefined;
+            const effectsObj = optionObj.effects as Record<string, unknown> | undefined;
+            const statsDelta = normalizeStatDelta(effectsObj?.stats);
+            const studentDelta = normalizeStudentDelta(effectsObj?.student);
+            const effects =
+              statsDelta || studentDelta
+                ? {
+                    ...(statsDelta ? { stats: statsDelta } : {}),
+                    ...(studentDelta ? { student: studentDelta } : {}),
+                  }
+                : undefined;
+            return { id, label, hint, outcome, effects } satisfies DecisionOption;
+          })
+          .filter(Boolean) as DecisionOption[];
+
+        if (!options.length) return null;
+        return {
+          id: `dec-student-paper-${student.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          kind: 'studentPaperEvent',
+          title,
+          prompt,
+          options,
+          createdYear: stamp.year,
+          createdQuarter: stamp.quarter,
+          context: { studentId: student.id },
+        };
+      };
+
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/events/student-paper`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            student: {
+              id: student.id,
+              name: student.name,
+              studentType: student.studentType,
+              year: student.year,
+              traits: student.traits,
+              pendingPapers: student.pendingPapers,
+              totalPapers: student.totalPapers,
+              contribution: student.contribution,
+            },
+            mentor: {
+              name,
+              researchFocus,
+              selectedDiscipline,
+              selectedDepartment,
+            },
+            year: stamp.year,
+            quarter: stamp.quarter,
+          }),
+        });
+        if (!res.ok) throw new Error('Student paper event response not ok');
+        const data = await res.json();
+        const decision = buildFromApiPayload(data);
+        if (!decision) throw new Error('Invalid student paper event payload');
+        setPendingDecisions((prev) => [...prev, decision]);
+        setActiveDecisionId((prev) => prev ?? decision.id);
+        pushEvent('学生论文事件', `${student.name} 有新的投稿/返修抉择。`);
+      } catch (error) {
+        console.warn('Student paper event generation failed, fallback.', error);
+        const fallbackDecision = buildStudentPaperFallbackDecision({
+          student,
+          mentorStats: mentorSnapshot,
+          year: stamp.year,
+          quarter: stamp.quarter,
+        });
+        setPendingDecisions((prev) => [...prev, fallbackDecision]);
+        setActiveDecisionId((prev) => prev ?? fallbackDecision.id);
+        pushEvent('学生论文事件', `${student.name} 有新的论文抉择（已使用本地模板）。`);
+      }
+    },
+    [name, researchFocus, selectedDepartment, selectedDiscipline, pushEvent],
+  );
+
   const handleAssignStudentToProject = (projectId: string, studentId: string) => {
     setProjects((prev) =>
       prev.map((project) => {
@@ -946,21 +1934,19 @@ function App() {
     (source: ResearchProject[], students: StudentPersona[]) => {
       const studentMap = new Map(students.map((student) => [student.id, student]));
       const completedTitles: string[] = [];
+      const completedProjects: ResearchProject[] = [];
       const updated = source.map((project) => {
         if (project.completed) return project;
         const memberStats = project.assignedStudentIds
           .map((id) => studentMap.get(id))
           .filter(Boolean) as StudentPersona[];
-        const base = 4;
+        const base = memberStats.length ? 4 : 0;
         const boost = memberStats.reduce((sum, member) => sum + Math.round(member.diligence / 40), 0);
         const nextLiterature = clampValue(project.progress.literature + base + boost, 0, 100);
         const nextExperiment = clampValue(project.progress.experiment + base + boost, 0, 100);
         const nextResults = clampValue(project.progress.results + base + boost, 0, 100);
         const completed = nextLiterature >= 100 && nextExperiment >= 100 && nextResults >= 100;
-        if (completed && !project.completed) {
-          completedTitles.push(project.title);
-        }
-        return {
+        const nextProject: ResearchProject = {
           ...project,
           progress: {
             literature: nextLiterature,
@@ -969,8 +1955,13 @@ function App() {
           },
           completed,
         };
+        if (completed && !project.completed) {
+          completedTitles.push(project.title);
+          completedProjects.push(nextProject);
+        }
+        return nextProject;
       });
-      return { updated, completedTitles };
+      return { updated, completedTitles, completedProjects };
     },
     [],
   );
@@ -1107,7 +2098,7 @@ function App() {
         setTeamLoading(false);
       }
     },
-    [stage, name, selectedDepartment, researchFocus, stats.year, stats.quarter, applyFirstYearRules],
+    [stage, name, selectedDepartment, researchFocus, stats.year, stats.quarter, applyFirstYearRules, pushEvent],
   );
 
   const handleRecruit = async () => {
@@ -1161,23 +2152,96 @@ function App() {
 
   const handleEndQuarter = () => {
     const nextStats = applyQuarterEffects(stats);
-    setTeamMembers((prev) => {
-      if (!prev.length) return prev;
-      return applyMentorshipInfluence(prev).map((student) => ({
-        ...student,
-        hasWhippedThisQuarter: false,
-        hasComfortedThisQuarter: false,
-      }));
-    });
-    const { updated, completedTitles } = advanceProjects(projects, teamMembers);
+    const teamSnapshot = teamMembers.length
+      ? applyMentorshipInfluence(teamMembers).map((student) => ({
+          ...student,
+          hasWhippedThisQuarter: false,
+          hasComfortedThisQuarter: false,
+        }))
+      : teamMembers;
+
+    const { updated, completedTitles, completedProjects } = advanceProjects(projects, teamSnapshot);
     if (completedTitles.length) {
       completedTitles.forEach((title) => pushEvent('课题完成', `课题「${title}」阶段成果已完成。`));
     }
-    setProjects(updated);
-    setStats({
-      ...nextStats,
-      reputation: nextStats.reputation + completedTitles.length,
+
+    const paperSettlement = settleResearchPapers({
+      students: teamSnapshot,
+      mentorStats: stats,
+      projects: updated,
     });
+    paperSettlement.events.forEach((event) => pushEvent(event.title, event.detail));
+
+    const projectPaperSettlement = settleProjectPapers({
+      projectPapers,
+      students: paperSettlement.updatedStudents,
+      mentorStats: stats,
+      currentStamp: { year: stats.year, quarter: stats.quarter },
+      decisionStamp: { year: nextStats.year, quarter: nextStats.quarter },
+    });
+    projectPaperSettlement.events.forEach((event) => pushEvent(event.title, event.detail));
+
+    const newProjectPapers: ProjectPaper[] = completedProjects.map((project) => {
+      const id = `pp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      return {
+        id,
+        projectId: project.id,
+        projectTitle: project.title,
+        leadStudentId: pickProjectLeadStudentId(project, teamSnapshot),
+        status: 'awaitingVenue',
+        revisionRound: 0,
+      };
+    });
+
+    const newProjectDecisions = newProjectPapers.map((paper) =>
+      buildProjectVenueDecision({
+        projectPaperId: paper.id,
+        projectId: paper.projectId,
+        projectTitle: paper.projectTitle,
+        year: nextStats.year,
+        quarter: nextStats.quarter,
+      }),
+    );
+
+    if (newProjectPapers.length) {
+      newProjectPapers.forEach((paper) =>
+        pushEvent('成果投稿待办', `课题「${paper.projectTitle}」已生成论文稿件，等待选择投稿等级。`),
+      );
+    }
+
+    setProjectPapers([...newProjectPapers, ...projectPaperSettlement.updatedPapers]);
+    setTeamMembers(projectPaperSettlement.updatedStudents);
+    setProjects(updated);
+
+    const combinedQuarterDelta: StatDelta = {
+      ...projectPaperSettlement.statDelta,
+      funding: (projectPaperSettlement.statDelta.funding ?? 0) + paperSettlement.fundingDelta,
+      reputation:
+        (projectPaperSettlement.statDelta.reputation ?? 0) +
+        completedTitles.length +
+        paperSettlement.reputationDelta,
+    };
+
+    setStats(applyMentorDelta(nextStats, combinedQuarterDelta));
+
+    const decisionsToAdd = [...newProjectDecisions, ...projectPaperSettlement.decisions];
+    if (decisionsToAdd.length) {
+      setPendingDecisions((prev) => {
+        const existingIds = new Set(prev.map((item) => item.id));
+        const uniqueAdds = decisionsToAdd.filter((item) => !existingIds.has(item.id));
+        return uniqueAdds.length ? [...prev, ...uniqueAdds] : prev;
+      });
+      const nextDecisionId =
+        activeDecisionId ?? pendingDecisions[0]?.id ?? decisionsToAdd[0]?.id ?? null;
+      setActiveDecisionId(nextDecisionId);
+    }
+
+    const decisionStudent = paperSettlement.decisionStudentId
+      ? projectPaperSettlement.updatedStudents.find((student) => student.id === paperSettlement.decisionStudentId) ?? null
+      : null;
+    if (decisionStudent) {
+      void queueStudentPaperDecision(decisionStudent, { year: nextStats.year, quarter: nextStats.quarter }, stats);
+    }
     pushEvent('季度结算', `已结束第 ${stats.year} 年第 ${stats.quarter} 季度。`);
   };
 
@@ -1205,6 +2269,11 @@ function App() {
     setProfileLoading(false);
     setStats(buildInitialStats(almaMater));
     setTeamMembers([]);
+    setProjects([]);
+    setProjectPapers([]);
+    setGrantApplications([]);
+    setPendingDecisions([]);
+    setActiveDecisionId(null);
     setTeamMessage(null);
     setTeamError(null);
     setTeamBootstrapped(false);
@@ -1453,7 +2522,9 @@ function App() {
         stats,
         teamMembers,
         projects,
+        projectPapers,
         grantApplications,
+        pendingDecisions,
       };
       localStorage.setItem(STORED_STATE_KEY, JSON.stringify(payload));
     } catch (error) {
@@ -1470,7 +2541,9 @@ function App() {
     stats,
     teamMembers,
     projects,
+    projectPapers,
     grantApplications,
+    pendingDecisions,
   ]);
 
   useEffect(() => {
@@ -1722,6 +2795,11 @@ function App() {
               <div className="dashboard-meta">
                 <span>第{stats.year} 年 · 第{stats.quarter} 季度</span>
                 <div className="meta-actions">
+                  {pendingDecisions.length > 0 && (
+                    <button className="ghost" type="button" onClick={handleOpenDecisionQueue}>
+                      待处理 {pendingDecisions.length}
+                    </button>
+                  )}
                   <button className="primary" type="button">
                     发布公告
                   </button>
@@ -2118,6 +3196,68 @@ function App() {
                     </div>
                   </div>
                   <div className="research-card">
+                    <h4>论文产出</h4>
+                    <div className="student-meta paper-meta">
+                      <span>在投 {paperSummary.pending}</span>
+                      <span>发表 {paperSummary.published}</span>
+                    </div>
+                    <p className="muted-text">提示：论文进度会在季度结算时自动推进；满 100 将自动投稿。</p>
+                  </div>
+                  <div className="research-card">
+                    <h4>课题论文</h4>
+                    <div className="student-meta paper-meta">
+                      <span>待选 {projectPaperSummary.awaitingVenue}</span>
+                      <span>外审 {projectPaperSummary.underReview}</span>
+                      <span>返修 {projectPaperSummary.awaitingRevision}</span>
+                      <span>接收 {projectPaperSummary.accepted}</span>
+                    </div>
+                    {projectPapers.length ? (
+                      <div className="project-paper-list">
+                        {projectPapers.slice(0, 4).map((paper) => {
+                          const statusLabel =
+                            paper.status === 'awaitingVenue'
+                              ? '待选刊会'
+                              : paper.status === 'underReview'
+                                ? '外审中'
+                                : paper.status === 'awaitingRevision'
+                                  ? '待返修决策'
+                                  : paper.status === 'accepted'
+                                    ? '已接收'
+                                    : '已拒稿';
+                          const badgeClass =
+                            paper.status === 'accepted'
+                              ? 'status'
+                              : paper.status === 'rejected'
+                                ? 'danger'
+                                : 'stage';
+                          const dueLabel =
+                            paper.decisionDueYear && paper.decisionDueQuarter
+                              ? ` · 预计 ${paper.decisionDueYear} 年 Q${paper.decisionDueQuarter} 出结果`
+                              : '';
+                          const revisionLabel = paper.revisionRound ? ` · 返修轮次 ${paper.revisionRound}` : '';
+                          const venueLabel =
+                            paper.venueType && paper.venueTier ? ` · ${formatVenueLabel(paper)}` : ' · 未选择刊会';
+
+                          return (
+                            <div key={paper.id} className="project-paper-item">
+                              <div className="project-paper-head">
+                                <strong>{paper.projectTitle}</strong>
+                                <span className={`badge ${badgeClass}`}>{statusLabel}</span>
+                              </div>
+                              <p className="muted-text">
+                                {venueLabel}
+                                {revisionLabel}
+                                {dueLabel}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="muted-text">暂无课题论文，结题后自动生成投稿流程。</p>
+                    )}
+                  </div>
+                  <div className="research-card">
                     <h4>课题列表</h4>
                     {projects.length ? (
                       <div className="project-list">
@@ -2321,6 +3461,14 @@ function App() {
   return (
     <>
       {stage === 'application' ? applicationView : dashboardView}
+      {stage === 'briefing' && activeDecision && (
+        <DecisionModal
+          decision={activeDecision}
+          queueCount={pendingDecisions.length}
+          onClose={() => setActiveDecisionId(null)}
+          onChoose={(optionId) => handleDecisionChoose(activeDecision, optionId)}
+        />
+      )}
       {profileLoading && stage === 'application' && (
         <div className="loading-overlay">
           <div className="loading-card">

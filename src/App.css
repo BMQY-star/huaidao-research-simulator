@@ -862,6 +862,17 @@
     font-weight: 600;
   }
 
+  .paper-meta {
+    margin-left: 0;
+    min-width: 0;
+  }
+
+  .paper-meta span {
+    background: #eff6ff;
+    border-color: rgba(59, 130, 246, 0.35);
+    color: #1d4ed8;
+  }
+
   .student-story {
     font-size: 11px;
     color: #475569;
@@ -1095,6 +1106,11 @@
   .badge.status {
     background: #dcfce7;
     color: #166534;
+  }
+
+  .badge.danger {
+    background: #fee2e2;
+    color: #b91c1c;
   }
 
   .badge.small {
@@ -1403,6 +1419,28 @@
     gap: 12px;
   }
 
+  .project-paper-list {
+    margin-top: 10px;
+    display: grid;
+    gap: 10px;
+  }
+
+  .project-paper-item {
+    background: #fff;
+    border-radius: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    padding: 12px;
+    display: grid;
+    gap: 6px;
+  }
+
+  .project-paper-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
   .project-item {
     background: #fff;
     border-radius: 14px;
@@ -1564,7 +1602,8 @@
   }
 
   .settings-modal,
-  .onboarding-modal {
+  .onboarding-modal,
+  .decision-modal {
     width: min(420px, 100%);
     border-radius: 20px;
     background: #fff;
@@ -1577,12 +1616,62 @@
     width: min(520px, 100%);
   }
 
+  .decision-modal {
+    width: min(560px, 100%);
+  }
+
   .settings-head,
-  .onboarding-head {
+  .onboarding-head,
+  .decision-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+  }
+
+  .decision-body {
+    margin-top: 12px;
+    display: grid;
+    gap: 12px;
+  }
+
+  .decision-prompt {
+    margin: 0;
+    color: #0f172a;
+    line-height: 1.6;
+  }
+
+  .decision-options {
+    display: grid;
+    gap: 10px;
+  }
+
+  .decision-option {
+    width: 100%;
+    text-align: left;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: #f8fafc;
+    cursor: pointer;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  }
+
+  .decision-option:hover {
+    border-color: rgba(59, 130, 246, 0.4);
+    background: #ffffff;
+    box-shadow: 0 18px 30px rgba(15, 23, 42, 0.12);
+    transform: translateY(-1px);
+  }
+
+  .decision-option-main {
+    display: grid;
+    gap: 4px;
+  }
+
+  .decision-option strong {
+    font-size: 14px;
+    color: #0f172a;
   }
 
   .settings-body {
@@ -1706,5 +1795,3 @@
     }
   }
 }
-
-

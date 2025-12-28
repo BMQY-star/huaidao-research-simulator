@@ -4,6 +4,7 @@ import cors from 'cors'
 import { generateProfileFromLLM } from './services/profileGenerator.js'
 import { generateStudentPersonas } from './services/studentGenerator.js'
 import { generateProjectTitle } from './services/projectTitleGenerator.js'
+import { generateStudentPaperEvent } from './services/studentPaperEventGenerator.js'
 
 const app = express()
 const PORT = Number(process.env.API_PORT || process.env.PORT || 4000)
@@ -163,6 +164,24 @@ app.post('/api/projects/title', async (req, res) => {
   } catch (error) {
     console.error('Project title generation failed', error)
     res.status(500).json({ error: '课题名称生成失败，请稍后再试。' })
+  }
+})
+
+app.post('/api/events/student-paper', async (req, res) => {
+  const payload = {
+    student: req.body?.student,
+    mentor: req.body?.mentor,
+    year: req.body?.year,
+    quarter: req.body?.quarter,
+  }
+
+  try {
+    console.log('[API] POST /api/events/student-paper', new Date().toISOString())
+    const event = await generateStudentPaperEvent(payload)
+    res.json(event)
+  } catch (error) {
+    console.error('Student paper event generation failed', error)
+    res.status(500).json({ error: '随机事件生成失败，请稍后再试。' })
   }
 })
 
