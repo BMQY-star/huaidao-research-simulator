@@ -1449,8 +1449,9 @@
 
   .project-list {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 10px;
+    align-items: start;
   }
 
   .project-paper-list {
@@ -1597,10 +1598,12 @@
 
   .project-team-list {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 6px;
     flex: 1 1 auto;
     min-width: 190px;
+    overflow-x: auto;
+    padding-bottom: 2px;
   }
 
   .project-assign .text-input {
@@ -1953,6 +1956,10 @@
       width: 100%;
       height: auto;
     }
+
+    .project-list {
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    }
   }
 
   @media (max-width: 720px) {
@@ -1990,6 +1997,10 @@
     .project-assign .text-input {
       max-width: none;
       width: 100%;
+    }
+
+    .project-list {
+      grid-template-columns: 1fr;
     }
   }
 }
