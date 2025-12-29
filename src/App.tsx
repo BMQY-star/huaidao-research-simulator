@@ -3180,68 +3180,96 @@ function App() {
                           const assigned = project.assignedStudentIds
                             .map((id) => teamMembers.find((student) => student.id === id))
                             .filter(Boolean) as StudentPersona[];
+                          const overallProgress = Math.round(
+                            (project.progress.literature + project.progress.experiment + project.progress.results) / 3,
+                          );
+                          const availableStudents = teamMembers.filter(
+                            (student) => !project.assignedStudentIds.includes(student.id),
+                          );
                           return (
-                            <div key={project.id} className="project-item">
+                            <div
+                              key={project.id}
+                              className={`project-item ${project.completed ? 'completed' : ''}`}
+                            >
                               <div className="project-head">
-                                <div>
-                                  <strong>{project.title}</strong>
-                                  <p className="muted-text">
-                                    {project.category} · 创建于第 {project.createdYear} 年 Q{project.createdQuarter}
-                                  </p>
+                                <div className="project-title-block">
+                                  <strong title={project.title}>{project.title}</strong>
+                                  <div className="project-meta">
+                                    <span className="badge stage small">{project.category}</span>
+                                    <span>
+                                      创建：{project.createdYear} 年 Q{project.createdQuarter}
+                                    </span>
+                                    <span>成员：{assigned.length}</span>
+                                  </div>
                                 </div>
-                                <span className={`badge ${project.completed ? 'status' : 'stage'}`}>
-                                  {project.completed ? '已完成' : '进行中'}
-                                </span>
+                                <div className="project-status">
+                                  <span className={`badge ${project.completed ? 'status' : 'stage'}`}>
+                                    {project.completed ? '已完成' : '进行中'}
+                                  </span>
+                                  <span className="badge small">完成度 {overallProgress}%</span>
+                                </div>
                               </div>
-                              <div className="progress-list compact">
+                              <div className="project-progress">
                                 {[
-                                  { label: '文献综述', value: project.progress.literature },
-                                  { label: '实验设计', value: project.progress.experiment },
-                                  { label: '结果整理', value: project.progress.results },
+                                  { key: 'literature', label: '文献综述', value: project.progress.literature },
+                                  { key: 'experiment', label: '实验设计', value: project.progress.experiment },
+                                  { key: 'results', label: '结果整理', value: project.progress.results },
                                 ].map((item) => (
-                                  <div key={item.label} className="progress-row">
-                                    <span>{item.label}</span>
-                                    <div className="progress-bar">
+                                  <div key={item.key} className={`project-progress-item ${item.key}`}>
+                                    <div className="project-progress-top">
+                                      <span>{item.label}</span>
+                                      <em>{item.value}%</em>
+                                    </div>
+                                    <div className="project-progress-bar">
                                       <span style={{ width: `${item.value}%` }} />
                                     </div>
-                                    <em>{item.value}%</em>
                                   </div>
                                 ))}
                               </div>
                               <div className="project-team">
-                                <div className="project-team-list">
-                                  {assigned.length ? (
-                                    assigned.map((member) => (
-                                      <button
-                                        key={member.id}
-                                        className="chip tiny"
-                                        type="button"
-                                        onClick={() => handleRemoveStudentFromProject(project.id, member.id)}
-                                      >
-                                        {member.name}
-                                      </button>
-                                    ))
-                                  ) : (
-                                    <span className="muted-text">尚未分配学生。</span>
-                                  )}
-                                </div>
-                                <div className="project-assign">
-                                  <select
-                                    className="text-input"
-                                    value=""
-                                    onChange={(event) => {
-                                      const value = event.target.value;
-                                      if (!value) return;
-                                      handleAssignStudentToProject(project.id, value);
-                                    }}
-                                  >
-                                    <option value="">添加学生</option>
-                                    {teamMembers.map((student) => (
-                                      <option key={student.id} value={student.id}>
-                                        {student.name}
+                                <div className="project-team-row">
+                                  <div className="project-team-list">
+                                    {assigned.length ? (
+                                      assigned.map((member) => (
+                                        <button
+                                          key={member.id}
+                                          className="project-member"
+                                          type="button"
+                                          title="点击移除"
+                                          onClick={() => handleRemoveStudentFromProject(project.id, member.id)}
+                                        >
+                                          <span className="project-member-avatar">{member.name.slice(0, 1)}</span>
+                                          <span className="project-member-name">{member.name}</span>
+                                          <span className="project-member-remove" aria-hidden="true">
+                                            ×
+                                          </span>
+                                        </button>
+                                      ))
+                                    ) : (
+                                      <span className="muted-text">尚未分配学生。</span>
+                                    )}
+                                  </div>
+                                  <div className="project-assign">
+                                    <select
+                                      className="text-input"
+                                      value=""
+                                      disabled={project.completed || availableStudents.length === 0}
+                                      onChange={(event) => {
+                                        const value = event.target.value;
+                                        if (!value) return;
+                                        handleAssignStudentToProject(project.id, value);
+                                      }}
+                                    >
+                                      <option value="">
+                                        {availableStudents.length ? '添加学生' : '暂无可添加成员'}
                                       </option>
-                                    ))}
-                                  </select>
+                                      {availableStudents.map((student) => (
+                                        <option key={student.id} value={student.id}>
+                                          {student.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
                                 </div>
                               </div>
                             </div>
