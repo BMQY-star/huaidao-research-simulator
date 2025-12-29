@@ -344,20 +344,21 @@
     font-size: 12px;
   }
   .dashboard-shell {
-    min-height: 100vh;
-    padding: 12px;
+    height: 100vh;
+    height: 100dvh;
+    padding: 0;
     background: radial-gradient(circle at 15% 15%, rgba(30, 64, 175, 0.12), transparent 45%),
       radial-gradient(circle at 85% 5%, rgba(180, 83, 9, 0.14), transparent 50%),
       linear-gradient(160deg, #f8f4ec 0%, #edf2f0 60%, #f5efe6 100%);
     display: flex;
-    align-items: center;
+    align-items: stretch;
     justify-content: center;
     overflow: hidden;
   }
 
   .dashboard-layout {
-    width: min(1840px, 100%);
-    height: calc(100vh - 24px);
+    width: 100%;
+    height: 100%;
     margin: 0 auto;
     display: flex;
     gap: 12px;
@@ -416,7 +417,7 @@
     flex-direction: column;
     gap: 10px;
     overflow: hidden;
-    width: clamp(260px, 19vw, 320px);
+    width: clamp(300px, 22vw, 380px);
     height: 100%;
   }
 

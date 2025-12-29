@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { llmClient } from '../lib/llmClient.js'
 
 const traitCatalog = [
@@ -30,6 +31,8 @@ const traitCatalog = [
 
 const traitMap = new Map(traitCatalog.map((trait) => [trait.id, trait]))
 const traitNameMap = new Map(traitCatalog.map((trait) => [trait.name, trait.id]))
+const mainTraitIds = traitCatalog.filter((trait) => trait.category === 'main').map((trait) => trait.id)
+const subTraitIds = traitCatalog.filter((trait) => trait.category === 'sub').map((trait) => trait.id)
 
 const sampleStudents = [
   {
@@ -68,6 +71,36 @@ const sampleStudents = [
     hasComfortedThisQuarter: false,
   },
 ]
+
+const fallbackFamilyNames = ['王', '李', '张', '刘', '陈', '杨', '赵', '黄', '吴', '周', '徐', '孙']
+const fallbackGivenNameChars = ['子', '文', '浩', '琪', '轩', '瑶', '宁', '辰', '雨', '航', '思', '睿', '一', '然']
+
+const generateFallbackName = () => {
+  const family = fallbackFamilyNames[Math.floor(Math.random() * fallbackFamilyNames.length)]
+  const given = fallbackGivenNameChars[Math.floor(Math.random() * fallbackGivenNameChars.length)]
+  const given2 =
+    Math.random() < 0.45 ? fallbackGivenNameChars[Math.floor(Math.random() * fallbackGivenNameChars.length)] : ''
+  return `${family}${given}${given2}`
+}
+
+const pickOne = (items) => items[Math.floor(Math.random() * items.length)]
+const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min
+const pickMany = (items, count) => {
+  const pool = [...items]
+  for (let i = pool.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+  }
+  return pool.slice(0, count)
+}
+
+const buildFallbackTraits = () => {
+  const main = pickOne(mainTraitIds) || 'average'
+  const subs = pickMany(subTraitIds, randomInt(2, 3))
+  return [main, ...subs]
+}
+
+const buildStudentId = () => `student-${randomUUID()}`
 
 const studentSystemPrompt =
   'You are a narrative generator for a tenure-track faculty simulator. Respond ONLY with strict JSON.'
@@ -150,7 +183,7 @@ const normalizeStudent = (student, index, defaults) => {
     })
     .filter(Boolean)
   return {
-    id: student.id || `student-${Date.now()}-${index}`,
+    id: buildStudentId(),
     name: student.name || fallback.name,
     studentType: student.studentType || fallback.studentType,
     year: student.year || fallback.year,
@@ -190,7 +223,47 @@ const normalizeStudent = (student, index, defaults) => {
 }
 
 const fallbackStudents = (count, defaults) =>
-  Array.from({ length: count }).map((_, index) => normalizeStudent(sampleStudents[index % sampleStudents.length], index, defaults))
+  Array.from({ length: count }).map((_, index) => {
+    const name = generateFallbackName()
+    const personalityPool = ['稳扎稳打', '社交达人', '点子王', '夜猫子', '务实派', '嘴硬心软', '卷王']
+    return normalizeStudent(
+      {
+        name,
+        studentType: 'MASTER',
+        year: 1,
+        diligence: randomInt(55, 92),
+        stress: randomInt(10, 34),
+        talent: randomInt(55, 92),
+        luck: randomInt(38, 90),
+        hiddenLuck: randomInt(40, 96),
+        contribution: 0,
+        pendingPapers: 0,
+        totalPapers: 0,
+        isLoadingPersona: false,
+        mentalState: randomInt(82, 100),
+        isBeingMentored: false,
+        isGenius: Math.random() < 0.12,
+        recruitedYear: 1,
+        isYoungTeacher: false,
+        personality: pickOne(personalityPool),
+        bio: `${name}，${defaults.department || '某学院'}研一学生。习惯把任务拆分成清单推进，对细节敏感，偶尔会在截止日期前突然爆发。`,
+        traits: buildFallbackTraits(),
+        whipReactions: {
+          success: ['收到！我会把进度拆成小目标，今晚先交一版结果。', '明白，马上安排实验并同步记录。'],
+          fail: ['我会先把问题定位清楚再继续推进，稍后给您一个可行方案。', '我有点卡住了，想先整理思路再加速。'],
+        },
+        comfortReactions: {
+          success: ['谢谢老师，我缓过来了，继续推进。', '收到关照，我会把节奏稳住。'],
+          fail: ['我先缓一缓，调整下状态再继续。', '我会尽量恢复专注，别担心。'],
+        },
+        department: defaults.department,
+        hasWhippedThisQuarter: false,
+        hasComfortedThisQuarter: false,
+      },
+      index,
+      defaults,
+    )
+  })
 
 const extractJsonArray = (text) => {
   const start = text.indexOf('[')

@@ -1445,24 +1445,6 @@ function App() {
     return pendingDecisions[0];
   }, [pendingDecisions, activeDecisionId]);
 
-  const projectPaperSummary = useMemo(
-    () =>
-      projectPapers.reduce(
-        (acc, paper) => ({
-          ...acc,
-          [paper.status]: acc[paper.status] + 1,
-        }),
-        {
-          awaitingVenue: 0,
-          underReview: 0,
-          awaitingRevision: 0,
-          accepted: 0,
-          rejected: 0,
-        } satisfies Record<ProjectPaperStatus, number>,
-      ),
-    [projectPapers],
-  );
-
   const currentDepartments = useMemo(
     () => departmentsByDiscipline[selectedDiscipline] ?? [],
     [selectedDiscipline],
@@ -2079,6 +2061,7 @@ function App() {
       setTeamMessage('只有第三季度才能开启招募。');
       return;
     }
+    setSelectedMentorId(null);
     await fetchTeamMembers(1, 'recruit');
   };
 
@@ -3188,60 +3171,6 @@ function App() {
                         );
                       })}
                     </div>
-                  </div>
-                  <div className="research-card project-paper-card">
-                    <h4>课题论文</h4>
-                    <div className="student-meta paper-meta">
-                      <span>待选 {projectPaperSummary.awaitingVenue}</span>
-                      <span>外审 {projectPaperSummary.underReview}</span>
-                      <span>返修 {projectPaperSummary.awaitingRevision}</span>
-                      <span>接收 {projectPaperSummary.accepted}</span>
-                    </div>
-                    {projectPapers.length ? (
-                      <div className="project-paper-list">
-                        {projectPapers.slice(0, 4).map((paper) => {
-                          const statusLabel =
-                            paper.status === 'awaitingVenue'
-                              ? '待选刊会'
-                              : paper.status === 'underReview'
-                                ? '外审中'
-                                : paper.status === 'awaitingRevision'
-                                  ? '待返修决策'
-                                  : paper.status === 'accepted'
-                                    ? '已接收'
-                                    : '已拒稿';
-                          const badgeClass =
-                            paper.status === 'accepted'
-                              ? 'status'
-                              : paper.status === 'rejected'
-                                ? 'danger'
-                                : 'stage';
-                          const dueLabel =
-                            paper.decisionDueYear && paper.decisionDueQuarter
-                              ? ` · 预计 ${paper.decisionDueYear} 年 Q${paper.decisionDueQuarter} 出结果`
-                              : '';
-                          const revisionLabel = paper.revisionRound ? ` · 返修轮次 ${paper.revisionRound}` : '';
-                          const venueLabel =
-                            paper.venueType && paper.venueTier ? ` · ${formatVenueLabel(paper)}` : ' · 未选择刊会';
-
-                          return (
-                            <div key={paper.id} className="project-paper-item">
-                              <div className="project-paper-head">
-                                <strong>{paper.projectTitle}</strong>
-                                <span className={`badge ${badgeClass}`}>{statusLabel}</span>
-                              </div>
-                              <p className="muted-text">
-                                {venueLabel}
-                                {revisionLabel}
-                                {dueLabel}
-                              </p>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="muted-text">暂无课题论文，结题后自动生成投稿流程。</p>
-                    )}
                   </div>
                   <div className="research-card project-list-card">
                     <h4>课题列表</h4>
