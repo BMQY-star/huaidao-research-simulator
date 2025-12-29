@@ -1449,8 +1449,8 @@
 
   .project-list {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 8px;
     align-items: start;
   }
 
@@ -1482,14 +1482,14 @@
     border: 1px solid rgba(148, 163, 184, 0.2);
     padding: 10px;
     display: grid;
-    gap: 8px;
+    gap: 6px;
     box-shadow: 0 10px 20px rgba(15, 23, 42, 0.06);
   }
 
   .project-head {
     display: flex;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
     align-items: flex-start;
     flex-wrap: wrap;
   }
@@ -1509,7 +1509,7 @@
   .project-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 4px;
     align-items: center;
     margin-top: 4px;
     font-size: 10px;
@@ -1533,7 +1533,7 @@
   .project-progress {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
+    gap: 6px;
   }
 
   .project-progress-item {
@@ -1591,7 +1591,7 @@
 
   .project-team-row {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     align-items: center;
     flex-wrap: wrap;
   }
@@ -1599,7 +1599,7 @@
   .project-team-list {
     display: flex;
     flex-wrap: nowrap;
-    gap: 6px;
+    gap: 4px;
     flex: 1 1 auto;
     min-width: 190px;
     overflow-x: auto;
@@ -1958,7 +1958,7 @@
     }
 
     .project-list {
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     }
   }
 
