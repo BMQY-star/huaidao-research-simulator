@@ -1,7 +1,8 @@
 ﻿
 @layer components {
   .app-shell {
-    min-height: 100vh;
+    min-height: max(100vh, 1800px);
+    min-height: max(100dvh, 1800px);
     padding: 48px 24px 64px;
     background: radial-gradient(circle at 20% 20%, rgba(244, 214, 161, 0.35), transparent 40%),
       radial-gradient(circle at 85% 10%, rgba(148, 163, 184, 0.25), transparent 45%),
@@ -33,7 +34,7 @@
   }
 
   .browser {
-    width: min(1180px, 100%);
+    width: min(800px, 100%);
     border-radius: 28px;
     background: #fbf8f2;
     box-shadow: 0 24px 70px rgba(15, 23, 42, 0.18);
@@ -344,12 +345,12 @@
     font-size: 12px;
   }
   .dashboard-shell {
-    min-height: 100vh;
-    min-height: 100dvh;
+    min-height: max(100vh, 1800px);
+    min-height: max(100dvh, 1800px);
     padding: 0;
     background: radial-gradient(circle at 15% 15%, rgba(30, 64, 175, 0.12), transparent 45%),
       radial-gradient(circle at 85% 5%, rgba(180, 83, 9, 0.14), transparent 50%),
-      linear-gradient(160deg, #f8f4ec 0%, #edf2f0 60%, #f5efe6 100%);
+      linear-gradient(160deg, #f8f4ec 0%, #edf2f0 60%, #f5efe6 100%);    
     display: flex;
     align-items: stretch;
     justify-content: center;
@@ -357,8 +358,8 @@
 
   .dashboard-layout {
     width: 100%;
-    min-height: 100vh;
-    min-height: 100dvh;
+    min-height: max(100vh, 1800px);
+    min-height: max(100dvh, 1800px);
     margin: 0 auto;
     display: flex;
     gap: 12px;
@@ -366,8 +367,8 @@
   }
 
   .dashboard-frame {
-    min-height: 100vh;
-    min-height: 100dvh;
+    min-height: max(100vh, 1800px);
+    min-height: max(100dvh, 1800px);
     border-radius: 24px;
     border: 1px solid rgba(148, 163, 184, 0.35);
     background: #fbf8f2;
@@ -404,6 +405,15 @@
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+    min-height: calc(100vh - 140px);
+  }
+
+  /* 统一的内容区域最小高度 - 基于科研页面显示6个成员的高度 */
+  .home-grid,
+  .team-shell,
+  .research-shell,
+  .equipment-shell {
+    min-height: 800px;
   }
 
   .dashboard-right {
@@ -416,6 +426,8 @@
     gap: 10px;
     overflow-y: auto;
     width: clamp(300px, 22vw, 380px);
+    min-height: 100vh;
+    min-height: 100dvh;
   }
 
   .dashboard-right .timeline-card {
@@ -423,12 +435,15 @@
   }
 
   .dashboard-right .timeline-card:first-of-type {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
+    max-height: 60vh;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
   .dashboard-right .timeline-body {
-    max-height: 100%;
+    flex: 1;
     overflow-y: auto;
     padding-right: 6px;
   }
@@ -723,7 +738,7 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
-    max-height: 520px;
+    max-height: 700px;
     overflow-y: auto;
     padding-right: 4px;
   }
