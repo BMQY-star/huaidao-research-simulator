@@ -33,8 +33,8 @@ export class LLMClient {
     this.model = mdl
   }
 
-  buildPayload({ systemPrompt, userPrompt }) {
-    return {
+  buildPayload({ systemPrompt, userPrompt, maxOutputTokens }) {
+    const payload = {
       model: this.model,
       stream: true,
       input: [
@@ -48,6 +48,12 @@ export class LLMClient {
         },
       ],
     }
+
+    if (Number.isFinite(maxOutputTokens) && maxOutputTokens > 0) {
+      payload.max_output_tokens = Math.floor(maxOutputTokens)
+    }
+
+    return payload
   }
 
   async collectStream(stream) {
@@ -79,7 +85,7 @@ export class LLMClient {
     return result
   }
 
-  async generateText({ systemPrompt, userPrompt }) {
+  async generateText({ systemPrompt, userPrompt, maxOutputTokens }) {
     if (!userPrompt) throw new Error('userPrompt is required')
     if (!this.apiKey) throw new Error('LLM_API_KEY is required (set env/config)')
 
@@ -90,7 +96,7 @@ export class LLMClient {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify(this.buildPayload({ systemPrompt, userPrompt })),
+      body: JSON.stringify(this.buildPayload({ systemPrompt, userPrompt, maxOutputTokens })),
     })
 
     if (!response.ok || !response.body) {

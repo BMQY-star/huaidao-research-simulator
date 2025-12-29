@@ -21,14 +21,17 @@
 
 body {
   margin: 0;
-  min-height: 100vh;
+  min-height: max(100vh, 1800px);
+  min-height: max(100dvh, 1800px);
+  font-size: 17px;
   background: radial-gradient(circle at top, rgba(180, 83, 9, 0.1), transparent 45%),
     linear-gradient(160deg, #f7f2ea 0%, #eef2ea 40%, #f5efe6 100%);
   color: var(--ink);
 }
 
 #root {
-  min-height: 100vh;
+  min-height: max(100vh, 1800px);
+  min-height: max(100dvh, 1800px);
 }
 
 a {
