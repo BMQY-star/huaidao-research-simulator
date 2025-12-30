@@ -1,5 +1,5 @@
 ﻿
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import './App.css';
 import { studentTraits, type StudentTrait, type TraitCategory } from './data/studentTraits';
 import { researchDirections } from './data/researchDirections';
@@ -11,7 +11,6 @@ import {
 } from './logic/gameState';
 
 const API_BASE_URL = import.meta.env.DEV ? '' : import.meta.env.VITE_API_BASE_URL || '';
-const TEAM_DEFAULT_COUNT = 1;
 const STORED_STATE_KEY = 'mentorSim.state';
 const STORED_TEAM_KEY = 'mentorSim.teamMembers';
 const fallbackProjectTitles = [
@@ -96,6 +95,7 @@ type ProjectPaper = {
   projectId: string;
   projectTitle: string;
   leadStudentId: string | null;
+  grantId?: string;
   venueType?: PaperVenueType;
   venueTier?: PaperVenueTier;
   status: ProjectPaperStatus;
@@ -108,11 +108,55 @@ type ProjectPaper = {
 };
 
 type GrantType = '国自然' | '国社科';
-type GrantState = {
-  type: GrantType;
-  appliedYear: number;
-  status: 'pending' | 'approved' | 'rejected';
+type GrantFundingTier = 'A' | 'B' | 'C';
+type GrantStatus = 'reviewing' | 'active' | 'completed' | 'rejected' | 'failed';
+type GrantRequirement = {
+  requiredSubmissions: number;
+  requiredAccepted: number;
+  requiredTopTierAtLeast?: PaperVenueTier;
 };
+type GrantState = {
+  id: string;
+  type: GrantType;
+  title: string;
+  appliedYear: number;
+  appliedQuarter: MentorStats['quarter'];
+  reviewEndYear: number;
+  reviewEndQuarter: MentorStats['quarter'];
+  status: GrantStatus;
+  baseScore: number;
+  scoreDelta: number;
+  luck: number;
+  lastReviewEventYear?: number;
+  lastReviewEventQuarter?: MentorStats['quarter'];
+  lastExecutionEventYear?: number;
+  lastExecutionEventQuarter?: MentorStats['quarter'];
+  tier?: GrantFundingTier;
+  fundingGranted?: number;
+  reputationGranted?: number;
+  activeStartYear?: number;
+  activeStartQuarter?: MentorStats['quarter'];
+  closureDueYear?: number;
+  closureDueQuarter?: MentorStats['quarter'];
+  assignedStudentIds: string[];
+  paperProgress: number;
+  paperIds: string[];
+};
+
+type GrantDecisionRequest =
+  | {
+      kind: 'grantReviewEvent';
+      mode: 'submission' | 'review';
+      grant: GrantState;
+      year: number;
+      quarter: MentorStats['quarter'];
+    }
+  | {
+      kind: 'grantExecutionEvent';
+      grant: GrantState;
+      year: number;
+      quarter: MentorStats['quarter'];
+    };
 
 type StudentPersona = {
   id: string;
@@ -166,10 +210,11 @@ const getTraitPoolsByCategory = (category: TraitCategory) => ({
   ),
 });
 
-const pickWeightedTrait = (category: TraitCategory, blocked: string[]) => {
+const pickWeightedTrait = (category: TraitCategory, blocked: string[]) => {     
   const pools = getTraitPoolsByCategory(category);
   const weightedPick = () => {
     const roll = Math.random();
+    if (category === 'main') return roll < 0.8 ? 'positive' : 'negative';
     if (roll < 0.6) return 'positive';
     if (roll < 0.8) return 'negative';
     return 'neutral';
@@ -236,6 +281,174 @@ const clampValue = (value: number, min: number, max: number) =>
 
 type LogEvent = { title: string; detail: string };
 
+const normalizePaperCount = (value: unknown) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.round(value));
+};
+
+const buildLocalStudentId = () => `student-local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+type GrantConfig = {
+  type: GrantType;
+  openQuarter: MentorStats['quarter'];
+  reviewOffsetQuarters: number;
+  executionDurationQuarters: number;
+  scoreBands: { rejectBelow: number; tierB: number; tierA: number };
+  tiers: Record<
+    GrantFundingTier,
+    { funding: number; reputationRange: [number, number]; requirement: GrantRequirement }
+  >;
+  reviewEventChance: number;
+  executionEventChance: number;
+};
+
+const grantConfigs: GrantConfig[] = [
+  {
+    type: '国自然',
+    openQuarter: 1,
+    reviewOffsetQuarters: 2,
+    executionDurationQuarters: 6,
+    scoreBands: { rejectBelow: 55, tierB: 65, tierA: 80 },
+    tiers: {
+      A: {
+        funding: 300000,
+        reputationRange: [4, 7],
+        requirement: { requiredSubmissions: 3, requiredAccepted: 2, requiredTopTierAtLeast: 'B' },
+      },
+      B: {
+        funding: 200000,
+        reputationRange: [2, 4],
+        requirement: { requiredSubmissions: 2, requiredAccepted: 1 },
+      },
+      C: {
+        funding: 120000,
+        reputationRange: [1, 3],
+        requirement: { requiredSubmissions: 1, requiredAccepted: 0 },
+      },
+    },
+    reviewEventChance: 0.75,
+    executionEventChance: 0.6,
+  },
+  {
+    type: '国社科',
+    openQuarter: 2,
+    reviewOffsetQuarters: 2,
+    executionDurationQuarters: 6,
+    scoreBands: { rejectBelow: 55, tierB: 65, tierA: 80 },
+    tiers: {
+      A: {
+        funding: 240000,
+        reputationRange: [3, 6],
+        requirement: { requiredSubmissions: 3, requiredAccepted: 2, requiredTopTierAtLeast: 'B' },
+      },
+      B: {
+        funding: 160000,
+        reputationRange: [2, 4],
+        requirement: { requiredSubmissions: 2, requiredAccepted: 1 },
+      },
+      C: {
+        funding: 90000,
+        reputationRange: [1, 3],
+        requirement: { requiredSubmissions: 1, requiredAccepted: 0 },
+      },
+    },
+    reviewEventChance: 0.75,
+    executionEventChance: 0.6,
+  },
+];
+
+const isGrantType = (value: unknown): value is GrantType => value === '国自然' || value === '国社科';
+const isGrantStatus = (value: unknown): value is GrantStatus =>
+  value === 'reviewing' || value === 'active' || value === 'completed' || value === 'rejected' || value === 'failed';
+
+const normalizeGrantApplications = (raw: unknown): GrantState[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const obj = item as Record<string, unknown>;
+      const id = typeof obj.id === 'string' ? obj.id : null;
+      const type = obj.type;
+      if (!id || !isGrantType(type)) return null;
+      const status = obj.status;
+      if (!isGrantStatus(status)) return null;
+      const title = typeof obj.title === 'string' ? obj.title : type;
+      const appliedYear = typeof obj.appliedYear === 'number' ? obj.appliedYear : 1;
+      const appliedQuarter = obj.appliedQuarter;
+      const reviewEndYear = typeof obj.reviewEndYear === 'number' ? obj.reviewEndYear : appliedYear;
+      const reviewEndQuarter = obj.reviewEndQuarter;
+      const quarterGuard = (value: unknown): value is MentorStats['quarter'] =>
+        value === 1 || value === 2 || value === 3 || value === 4;
+
+      if (!quarterGuard(appliedQuarter) || !quarterGuard(reviewEndQuarter)) return null;
+
+      return {
+        id,
+        type,
+        title,
+        appliedYear,
+        appliedQuarter,
+        reviewEndYear,
+        reviewEndQuarter,
+        status,
+        baseScore: typeof obj.baseScore === 'number' ? obj.baseScore : 0,
+        scoreDelta: typeof obj.scoreDelta === 'number' ? obj.scoreDelta : 0,
+        luck: typeof obj.luck === 'number' ? obj.luck : 0,
+        lastReviewEventYear: typeof obj.lastReviewEventYear === 'number' ? obj.lastReviewEventYear : undefined,
+        lastReviewEventQuarter: quarterGuard(obj.lastReviewEventQuarter) ? obj.lastReviewEventQuarter : undefined,
+        lastExecutionEventYear:
+          typeof obj.lastExecutionEventYear === 'number' ? obj.lastExecutionEventYear : undefined,
+        lastExecutionEventQuarter: quarterGuard(obj.lastExecutionEventQuarter)
+          ? obj.lastExecutionEventQuarter
+          : undefined,
+        tier: obj.tier === 'A' || obj.tier === 'B' || obj.tier === 'C' ? obj.tier : undefined,
+        fundingGranted: typeof obj.fundingGranted === 'number' ? obj.fundingGranted : undefined,
+        reputationGranted: typeof obj.reputationGranted === 'number' ? obj.reputationGranted : undefined,
+        activeStartYear: typeof obj.activeStartYear === 'number' ? obj.activeStartYear : undefined,
+        activeStartQuarter: quarterGuard(obj.activeStartQuarter) ? obj.activeStartQuarter : undefined,
+        closureDueYear: typeof obj.closureDueYear === 'number' ? obj.closureDueYear : undefined,
+        closureDueQuarter: quarterGuard(obj.closureDueQuarter) ? obj.closureDueQuarter : undefined,
+        assignedStudentIds: Array.isArray(obj.assignedStudentIds)
+          ? (obj.assignedStudentIds.filter((value) => typeof value === 'string') as string[])
+          : [],
+        paperProgress: typeof obj.paperProgress === 'number' ? obj.paperProgress : 0,
+        paperIds: Array.isArray(obj.paperIds)
+          ? (obj.paperIds.filter((value) => typeof value === 'string') as string[])
+          : [],
+      } satisfies GrantState;
+    })
+    .filter(Boolean) as GrantState[];
+};
+
+const pickGrantTitle = (type: GrantType, researchFocus: string) =>
+  `${type} · ${researchFocus}：${pickFallbackProjectTitle()}`;
+
+const calcGrantBaseScore = (mentorStats: MentorStats, type: GrantType) => {
+  const academia = mentorStats.academia.value;
+  const admin = mentorStats.admin.value;
+  const integrity = mentorStats.integrity.value;
+  const morale = mentorStats.morale.value;
+  const reputation = mentorStats.reputation;
+  const weight =
+    type === '国自然'
+      ? { academia: 0.6, admin: 0.25, integrity: 0.1, morale: 0.05 }
+      : { academia: 0.4, admin: 0.35, integrity: 0.15, morale: 0.05 };
+  const base =
+    30 +
+    academia * weight.academia +
+    admin * weight.admin +
+    integrity * weight.integrity +
+    morale * weight.morale +
+    reputation * 0.6;
+  const jitter = Math.round((Math.random() * 2 - 1) * 5);
+  return Math.round(clampValue(base + jitter, 30, 95));
+};
+
+const getGrantConfig = (type: GrantType) => grantConfigs.find((config) => config.type === type);
+
+const rollInRange = (min: number, max: number) =>
+  Math.round(min + Math.random() * (max - min));
+
 const buildActiveProjectCountByStudentId = (projects: ResearchProject[]) => {
   const counts = new Map<string, number>();
   projects.forEach((project) => {
@@ -248,25 +461,53 @@ const buildActiveProjectCountByStudentId = (projects: ResearchProject[]) => {
 };
 
 const calcPaperProgressGain = (student: StudentPersona, activeProjectCount: number) => {
-  const base = 3;
-  const diligenceBoost = Math.round(student.diligence / 35);
-  const talentBoost = Math.round(student.talent / 45);
-  const mentorBoost = student.isBeingMentored ? 1 : 0;
-  const projectBoost = Math.min(activeProjectCount, 2);
-  const stressPenalty = Math.round(student.stress / 50);
-  const lowMentalPenalty = student.mentalState < 50 ? 1 : 0;
+  const talent = clampValue(student.talent, 0, 100);
+  const diligence = clampValue(student.diligence, 0, 100);
+  const luck = clampValue(student.luck, 0, 100);
+  const stress = clampValue(student.stress, 0, 100);
+  const mental = clampValue(student.mentalState, 0, 100);
 
-  return clampValue(
-    base +
-      diligenceBoost +
-      talentBoost +
-      mentorBoost +
-      projectBoost -
-      stressPenalty -
-      lowMentalPenalty,
+  const core = diligence * 0.45 + talent * 0.4 + luck * 0.15;
+  let base = 20 + (core - 50) * 0.6;
+  base += Math.min(activeProjectCount, 2) * 2;
+  if (student.isBeingMentored) base += 2;
+  if (mental >= 85) base += 1;
+  if (stress >= 70) base -= 6;
+  if (mental < 50) base -= 6;
+
+  const luckJitter = rollInRange(-2, 2);
+  const jitter = rollInRange(-4, 4) + luckJitter;
+  const regular = clampValue(Math.round(base + jitter), 20, 40);
+
+  const burstEligible = talent >= 90 && luck >= 85 && mental >= 75 && stress <= 60;
+  if (burstEligible) {
+    const chance = clampValue(0.06 + (luck - 85) / 220, 0.06, 0.18);
+    if (Math.random() < chance) {
+      return clampValue(80 + rollInRange(-20, 20), 60, 100);
+    }
+  }
+
+  return regular;
+};
+
+const calcGrantPaperProgressGain = (
+  students: StudentPersona[],
+  mentorStats: MentorStats,
+  tier: GrantFundingTier | undefined,
+) => {
+  const mentorBoost = Math.round(mentorStats.academia.value / 30) + Math.round(mentorStats.admin.value / 60);
+  if (!students.length) return clampValue(2 + mentorBoost, 2, 8);
+  const base = 12;
+  const boost = students.reduce(
+    (sum, student) => sum + Math.round(student.diligence / 20) + Math.round(student.talent / 25),
     0,
-    12,
   );
+  const stressPenalty = students.reduce((sum, student) => sum + Math.round(student.stress / 50), 0);
+  const mentalPenalty = students.reduce((sum, student) => sum + (student.mentalState < 50 ? 1 : 0), 0);
+  const tierBoost = tier === 'A' ? 4 : tier === 'B' ? 2 : 0;
+  const jitter = rollInRange(-2, 2);
+
+  return clampValue(base + boost + tierBoost + mentorBoost + jitter - stressPenalty - mentalPenalty, 4, 50);
 };
 
 const calcPaperDecisionChance = (mentorStats: MentorStats) =>
@@ -302,7 +543,7 @@ const settleResearchPapers = ({
   const updatedStudents = students.map((student) => {
     const activeProjectCount = activeProjectCounts.get(student.id) ?? 0;
     const progressGain = calcPaperProgressGain(student, activeProjectCount);
-    const combinedProgress = clampValue(student.contribution + progressGain, 0, 250);
+    const combinedProgress = clampValue(student.contribution + progressGain, 0, 100);
     const submittedCount = Math.floor(combinedProgress / 100);
     const remainder = combinedProgress - submittedCount * 100;
 
@@ -389,7 +630,7 @@ const buildProjectVenueDecision = ({
   id: `dec-project-venue-${projectPaperId}`,
   kind: 'projectVenue',
   title: '成果投稿策略',
-  prompt: `课题「${projectTitle}」已结题。请选择本次投稿的期刊/会议等级：`,
+  prompt: `课题「${projectTitle}」已形成阶段成果。请选择本次投稿的期刊/会议等级：`,
   createdYear: year,
   createdQuarter: quarter,
   context: { projectPaperId, projectId },
@@ -501,6 +742,306 @@ const buildProjectRevisionDecision = ({
           },
         ],
 });
+
+type GrantEventTemplate = (grant: GrantState) => { title: string; prompt: string; options: DecisionOption[] };
+
+const grantSubmissionEventTemplates: GrantEventTemplate[] = [
+  (grant) => ({
+    title: `${grant.type}申报：材料窗口`,
+    prompt: `你刚提交「${grant.title}」，科研办提醒：材料格式与附件清单需要立刻确认，否则可能影响进入会评。`,
+    options: [
+      {
+        id: 'rush-fix',
+        label: '连夜补齐材料',
+        hint: '效率高 · 团队要加班',
+        outcome: '你带着学生把材料补到深夜，所有附件一次过审。',
+        effects: { stats: { morale: -1, admin: -1 } },
+        meta: { scoreDelta: 5 },
+      },
+      {
+        id: 'ask-office',
+        label: '请学院科研秘书帮忙核对',
+        hint: '更稳妥 · 需要协调沟通',
+        outcome: '科研秘书帮你卡住了细节问题，申报流程顺利推进。',
+        effects: { stats: { admin: -1 } },
+        meta: { scoreDelta: 3 },
+      },
+      {
+        id: 'let-it-go',
+        label: '先按原样提交',
+        hint: '省事 · 风险更高',
+        outcome: '你决定先不折腾，等评审意见出来再说。',
+        effects: { stats: { morale: 1 } },
+        meta: { scoreDelta: -3 },
+      },
+    ],
+  }),
+  (grant) => {
+    const gamble = rollInRange(-4, 7);
+    return {
+      title: `${grant.type}申报：合作背书`,
+      prompt: `合作单位愿意给「${grant.title}」出具背书与资源承诺，但也希望在成果署名与经费使用上获得更多话语权。`,
+      options: [
+        {
+          id: 'sign',
+          label: '签署合作备忘录',
+          hint: '成功率提升 · 后续需要协调',
+          outcome: '你敲定合作备忘录，背书材料写进申报书。',
+          effects: { stats: { integrity: 1 } },
+          meta: { scoreDelta: 4 },
+        },
+        {
+          id: 'hard-bargain',
+          label: '坚持条件，强硬谈判',
+          hint: '波动较大 · 看运气',
+          outcome: '你坚持底线，谈判结果好坏参半。',
+          meta: { scoreDelta: gamble },
+        },
+        {
+          id: 'decline',
+          label: '婉拒，保持独立',
+          hint: '更纯粹 · 也更难',
+          outcome: '你决定独立推进，申报书更聚焦但少了一份背书。',
+          meta: { scoreDelta: -2 },
+        },
+      ],
+    };
+  },
+];
+
+const grantReviewEventTemplates: GrantEventTemplate[] = [
+  (grant) => ({
+    title: `${grant.type}评审：匿名外审意见`,
+    prompt: `「${grant.title}」收到一轮匿名外审意见：评审认为创新点不错，但希望补充更有力的对比与数据。`,
+    options: [
+      {
+        id: 'add-data',
+        label: '加做对比实验与数据补强',
+        hint: '更扎实 · 消耗资源',
+        outcome: '你安排补实验与对比，申报书的说服力显著提升。',
+        effects: { stats: { funding: -6000, morale: -1, academia: 1 } },
+        meta: { scoreDelta: 6 },
+      },
+      {
+        id: 'refine-story',
+        label: '打磨叙事与表达，突出关键贡献',
+        hint: '成本低 · 提升有限',
+        outcome: '你重写关键段落，让评审更容易看懂价值。',
+        effects: { stats: { admin: -1 } },
+        meta: { scoreDelta: 3 },
+      },
+      {
+        id: 'hold-line',
+        label: '坚持原方案，等待会评',
+        hint: '不折腾 · 风险更高',
+        outcome: '你决定不追加工作，把精力留给下一阶段。',
+        meta: { scoreDelta: -3 },
+      },
+    ],
+  }),
+  () => {
+    const swing = rollInRange(-6, 6);
+    return {
+      title: '评审风向：政策导向调整',
+      prompt: '本年度指南口径微调，关键词与评价侧重点发生变化。你需要决定是否跟随风向调整表述。',
+      options: [
+        {
+          id: 'align',
+          label: '调整关键词，贴合指南口径',
+          hint: '更合规 · 损失部分特色',
+          outcome: '你对照指南微调表述，材料更“对味”。',
+          effects: { stats: { admin: -1 } },
+          meta: { scoreDelta: 4 },
+        },
+        {
+          id: 'keep',
+          label: '保持原案，突出原创性',
+          hint: '更锐利 · 波动更大',
+          outcome: '你保持原创表达，评审会如何解读仍是未知。',
+          meta: { scoreDelta: swing },
+        },
+        {
+          id: 'overhaul',
+          label: '大幅重写，重新定位切入点',
+          hint: '收益高 · 成本更高',
+          outcome: '你大幅重写方案，材料焕然一新但也更耗心力。',
+          effects: { stats: { morale: -2, admin: -2 } },
+          meta: { scoreDelta: 7 },
+        },
+      ],
+    };
+  },
+  (grant) => ({
+    title: `${grant.type}评审：名额竞争`,
+    prompt: `学院内部名额竞争激烈，「${grant.title}」需要在推荐排序中争取更靠前的位置。`,
+    options: [
+      {
+        id: 'visit',
+        label: '拜访沟通，争取推荐',
+        hint: '提升排序 · 消耗精力',
+        outcome: '你和相关负责人充分沟通，争取到更优的推荐位置。',
+        effects: { stats: { admin: -2, morale: -1 } },
+        meta: { scoreDelta: 5 },
+      },
+      {
+        id: 'follow',
+        label: '按流程走，提交补充材料',
+        hint: '较稳 · 提升有限',
+        outcome: '你按流程补充材料，确保评审看到关键亮点。',
+        effects: { stats: { admin: -1 } },
+        meta: { scoreDelta: 2 },
+      },
+      {
+        id: 'step-back',
+        label: '佛系随缘',
+        hint: '省心 · 风险更高',
+        outcome: '你选择随缘，结果更多交给运气。',
+        effects: { stats: { morale: 1 } },
+        meta: { scoreDelta: -4 },
+      },
+    ],
+  }),
+];
+
+const grantExecutionEventTemplates: GrantEventTemplate[] = [
+  (grant) => ({
+    title: `${grant.type}执行：关键数据到位`,
+    prompt: `「${grant.title}」执行过程中，合作方放出了关键数据窗口。抓住机会可以显著加速论文产出。`,
+    options: [
+      {
+        id: 'all-in',
+        label: '集中火力冲刺一轮',
+        hint: '进度大涨 · 学生压力上升',
+        outcome: '你把团队拧成一股绳，连续推进到关键节点。',
+        effects: { stats: { morale: -1 }, student: { stress: 6, mentalState: -4 } },
+        meta: { progressDelta: 30 },
+      },
+      {
+        id: 'steady',
+        label: '稳妥清洗与复现后再推进',
+        hint: '进度提升 · 风险更低',
+        outcome: '你要求先把复现与清洗做扎实，进展稳定向前。',
+        effects: { stats: { funding: -3000 }, student: { stress: 2, mentalState: -1 } },
+        meta: { progressDelta: 18 },
+      },
+      {
+        id: 'miss',
+        label: '错过窗口，继续原计划',
+        hint: '无额外收益',
+        outcome: '你选择按部就班推进，错过了这次加速机会。',
+        meta: { progressDelta: 0 },
+      },
+    ],
+  }),
+  (grant) => ({
+    title: `${grant.type}执行：意外技术突破`,
+    prompt: `学生在「${grant.title}」相关方向上碰到一个“灵光一闪”的突破点，你需要决定如何投入资源。`,
+    options: [
+      {
+        id: 'prototype',
+        label: '快速原型验证',
+        hint: '速度快 · 可能返工',
+        outcome: '你推动快速原型，短期内拿到可写进论文的结果。',
+        effects: { stats: { funding: -2000, morale: -1 }, student: { stress: 4, mentalState: -2 } },
+        meta: { progressDelta: 22 },
+      },
+      {
+        id: 'deep',
+        label: '深入推导与严谨实验',
+        hint: '更稳 · 周期更长',
+        outcome: '你要求把推导与实验做完整，成果更扎实。',
+        effects: { stats: { morale: -1 }, student: { stress: 3 } },
+        meta: { progressDelta: 16 },
+      },
+      {
+        id: 'park',
+        label: '先放一放，避免过度消耗',
+        hint: '保心态 · 进度较慢',
+        outcome: '你选择先把节奏稳住，突破点暂时搁置。',
+        effects: { stats: { morale: 2 }, student: { stress: -4, mentalState: 4 } },
+        meta: { progressDelta: 6 },
+      },
+    ],
+  }),
+  () => {
+    const delta = rollInRange(-15, 25);
+    return {
+      title: '课题执行：突发波动',
+      prompt: '设备排队、数据异常或外部协作延迟，让执行进度出现波动。',
+      options: [
+        {
+          id: 'patch',
+          label: '紧急补救',
+          hint: '把波动压下去',
+          outcome: '你投入精力补救，尽量把损失压到最低。',
+          effects: { stats: { morale: -1 }, student: { stress: 4, mentalState: -2 } },
+          meta: { progressDelta: Math.max(delta, 0) },
+        },
+        {
+          id: 'replan',
+          label: '调整排期，换条路走',
+          hint: '稳住节奏',
+          outcome: '你调整排期与路径，进度回到可控状态。',
+          effects: { stats: { admin: -1 } },
+          meta: { progressDelta: 10 },
+        },
+        {
+          id: 'accept',
+          label: '接受波动，先保团队状态',
+          hint: '进度慢一些',
+          outcome: '你决定先稳住团队状态，避免进一步恶化。',
+          effects: { stats: { morale: 2 }, student: { stress: -2, mentalState: 3 } },
+          meta: { progressDelta: 5 },
+        },
+      ],
+    };
+  },
+];
+
+const buildGrantReviewDecision = ({
+  grant,
+  year,
+  quarter,
+  mode,
+}: {
+  grant: GrantState;
+  year: number;
+  quarter: MentorStats['quarter'];
+  mode: 'submission' | 'review';
+}): DecisionEvent => {
+  const templates = mode === 'submission' ? grantSubmissionEventTemplates : grantReviewEventTemplates;
+  const template = templates[Math.floor(Math.random() * templates.length)];
+  const payload = template(grant);
+  return {
+    id: `dec-grant-review-${grant.id}-${year}-${quarter}-${Math.random().toString(36).slice(2, 6)}`,
+    kind: 'grantReviewEvent',
+    createdYear: year,
+    createdQuarter: quarter,
+    context: { grantId: grant.id },
+    ...payload,
+  };
+};
+
+const buildGrantExecutionDecision = ({
+  grant,
+  year,
+  quarter,
+}: {
+  grant: GrantState;
+  year: number;
+  quarter: MentorStats['quarter'];
+}): DecisionEvent => {
+  const template = grantExecutionEventTemplates[Math.floor(Math.random() * grantExecutionEventTemplates.length)];
+  const payload = template(grant);
+  return {
+    id: `dec-grant-exec-${grant.id}-${year}-${quarter}-${Math.random().toString(36).slice(2, 6)}`,
+    kind: 'grantExecutionEvent',
+    createdYear: year,
+    createdQuarter: quarter,
+    context: { grantId: grant.id },
+    ...payload,
+  };
+};
 
 const formatVenueLabel = (paper: Pick<ProjectPaper, 'venueType' | 'venueTier'>) => {
   const typeLabel = paper.venueType === 'journal' ? '期刊' : paper.venueType === 'conference' ? '会议' : '刊会';
@@ -654,7 +1195,268 @@ const settleProjectPapers = ({
     return applyStudentDelta(student, delta);
   });
 
-  return { updatedPapers, updatedStudents, statDelta, decisions, events };
+  return { updatedPapers, updatedStudents, statDelta, decisions, events };      
+};
+
+const paperTierRank: Record<PaperVenueTier, number> = { A: 3, B: 2, C: 1 };
+
+const isVenueTierAtLeast = (tier: PaperVenueTier | undefined, floor: PaperVenueTier) =>
+  Boolean(tier && paperTierRank[tier] >= paperTierRank[floor]);
+
+const settleGrants = ({
+  grants,
+  students,
+  mentorStats,
+  projectPapers,
+  currentStamp,
+  decisionStamp,
+}: {
+  grants: GrantState[];
+  students: StudentPersona[];
+  mentorStats: MentorStats;
+  projectPapers: ProjectPaper[];
+  currentStamp: { year: number; quarter: MentorStats['quarter'] };
+  decisionStamp: { year: number; quarter: MentorStats['quarter'] };
+}): {
+  updatedGrants: GrantState[];
+  statDelta: StatDelta;
+  decisions: DecisionEvent[];
+  decisionRequests: GrantDecisionRequest[];
+  events: LogEvent[];
+  newPapers: ProjectPaper[];
+} => {
+  const statDelta: StatDelta = {};
+  const decisions: DecisionEvent[] = [];
+  const decisionRequests: GrantDecisionRequest[] = [];
+  const events: LogEvent[] = [];
+  const newPapers: ProjectPaper[] = [];
+
+  const addStatDelta = <K extends keyof StatDelta>(key: K, delta: number) => {
+    if (!delta) return;
+    statDelta[key] = (statDelta[key] ?? 0) + delta;
+  };
+
+  const pickLeadStudentId = (candidateIds: string[]) => {
+    const pool = candidateIds
+      .map((id) => students.find((student) => student.id === id))
+      .filter(Boolean) as StudentPersona[];
+    if (!pool.length) return null;
+    return pool.reduce((best, current) => {
+      const bestScore = best.diligence + best.talent;
+      const currentScore = current.diligence + current.talent;
+      return currentScore > bestScore ? current : best;
+    }).id;
+  };
+
+  const pickFallbackLeadId = () => {
+    if (!students.length) return null;
+    return students.reduce((best, current) => {
+      const bestScore = best.diligence + best.talent;
+      const currentScore = current.diligence + current.talent;
+      return currentScore > bestScore ? current : best;
+    }).id;
+  };
+
+  const buildGrantPaper = (grant: GrantState, leadStudentId: string | null) => {
+    const id = `pp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const paper: ProjectPaper = {
+      id,
+      projectId: `grant-${grant.id}`,
+      projectTitle: grant.title,
+      leadStudentId,
+      grantId: grant.id,
+      status: 'awaitingVenue',
+      revisionRound: 0,
+    };
+    newPapers.push(paper);
+    decisions.push(
+      buildProjectVenueDecision({
+        projectPaperId: paper.id,
+        projectId: paper.projectId,
+        projectTitle: paper.projectTitle,
+        year: decisionStamp.year,
+        quarter: decisionStamp.quarter,
+      }),
+    );
+    events.push({
+      title: '成果投稿待办',
+      detail: `课题「${paper.projectTitle}」已形成阶段成果，等待选择投稿等级。`,
+    });
+    return paper;
+  };
+
+  const updatedGrants: GrantState[] = grants.map((grant): GrantState => {
+    const config = getGrantConfig(grant.type);
+    if (!config) return grant;
+
+    if (grant.status === 'reviewing') {
+      const reviewEndStamp = { year: grant.reviewEndYear, quarter: grant.reviewEndQuarter };
+      const luckTick = rollInRange(-3, 3);
+      let nextGrant: GrantState = { ...grant, luck: grant.luck + luckTick };
+
+      if (!isQuarterReached(currentStamp, reviewEndStamp)) {
+        const alreadyQueued =
+          nextGrant.lastReviewEventYear === decisionStamp.year && nextGrant.lastReviewEventQuarter === decisionStamp.quarter;
+        if (!alreadyQueued && Math.random() < config.reviewEventChance) {
+          decisionRequests.push({
+            kind: 'grantReviewEvent',
+            mode: 'review',
+            grant: nextGrant,
+            year: decisionStamp.year,
+            quarter: decisionStamp.quarter,
+          });
+          events.push({
+            title: '课题评审来信',
+            detail: `「${grant.title}」评审阶段出现新情况，需要你做出选择。`,
+          });
+          nextGrant = {
+            ...nextGrant,
+            lastReviewEventYear: decisionStamp.year,
+            lastReviewEventQuarter: decisionStamp.quarter,
+          };
+        }
+        return nextGrant;
+      }
+
+      const finalScore = nextGrant.baseScore + nextGrant.scoreDelta + nextGrant.luck;
+      if (finalScore < config.scoreBands.rejectBelow) {
+        events.push({
+          title: '课题评审结果',
+          detail: `「${grant.title}」未获批（评分 ${finalScore}）。下年度可重新申报。`,
+        });
+        return { ...nextGrant, status: 'rejected' };
+      }
+
+      const tier: GrantFundingTier =
+        finalScore >= config.scoreBands.tierA ? 'A' : finalScore >= config.scoreBands.tierB ? 'B' : 'C';
+      const tierConfig = config.tiers[tier];
+      const repGain = rollInRange(tierConfig.reputationRange[0], tierConfig.reputationRange[1]);
+      addStatDelta('funding', tierConfig.funding);
+      addStatDelta('reputation', repGain);
+
+      const closureDue = addQuarters(decisionStamp, config.executionDurationQuarters - 1);
+
+      const autoLeadId = nextGrant.assignedStudentIds.length ? pickLeadStudentId(nextGrant.assignedStudentIds) : pickFallbackLeadId();
+      const resolvedAssigned =
+        nextGrant.assignedStudentIds.length || !autoLeadId ? nextGrant.assignedStudentIds : [autoLeadId];
+      const firstPaper = buildGrantPaper({ ...nextGrant, assignedStudentIds: resolvedAssigned }, autoLeadId);
+
+      events.push({
+        title: '课题获批',
+        detail: `「${grant.title}」获批（档位 ${tier} · 经费 +￥${tierConfig.funding.toLocaleString()} · 声望 +${repGain}）。`,
+      });
+
+      return {
+        ...nextGrant,
+        status: 'active',
+        tier,
+        fundingGranted: tierConfig.funding,
+        reputationGranted: repGain,
+        activeStartYear: decisionStamp.year,
+        activeStartQuarter: decisionStamp.quarter,
+        closureDueYear: closureDue.year,
+        closureDueQuarter: closureDue.quarter,
+        assignedStudentIds: resolvedAssigned,
+        paperProgress: 0,
+        paperIds: [...nextGrant.paperIds, firstPaper.id],
+      };
+    }
+
+    if (grant.status === 'active') {
+      const closureDueStamp =
+        grant.closureDueYear && grant.closureDueQuarter ? { year: grant.closureDueYear, quarter: grant.closureDueQuarter } : null;
+      const assigned =
+        grant.assignedStudentIds
+          .map((id) => students.find((student) => student.id === id))
+          .filter(Boolean) as StudentPersona[];
+      const gain = calcGrantPaperProgressGain(assigned, mentorStats, grant.tier);
+      const combinedProgress = clampValue(grant.paperProgress + gain, 0, 250);
+      const draftedCount = Math.floor(combinedProgress / 100);
+      const remainder = combinedProgress - draftedCount * 100;
+
+      let nextGrant: GrantState = { ...grant, paperProgress: remainder };
+
+      const resolvedLeadId = grant.assignedStudentIds.length ? pickLeadStudentId(grant.assignedStudentIds) : pickFallbackLeadId();
+      if (!grant.assignedStudentIds.length && resolvedLeadId) {
+        nextGrant = { ...nextGrant, assignedStudentIds: [resolvedLeadId] };
+      }
+
+      if (draftedCount > 0) {
+        for (let i = 0; i < draftedCount; i += 1) {
+          const paper = buildGrantPaper(nextGrant, resolvedLeadId);
+          nextGrant = { ...nextGrant, paperIds: [...nextGrant.paperIds, paper.id] };
+        }
+        events.push({
+          title: '课题产出',
+          detail: `「${grant.title}」本季度新增成果 ${draftedCount} 篇，已进入投稿决策队列。`,
+        });
+      }
+
+      if (closureDueStamp && !isQuarterReached(currentStamp, closureDueStamp)) {
+        const alreadyQueued =
+          nextGrant.lastExecutionEventYear === decisionStamp.year &&
+          nextGrant.lastExecutionEventQuarter === decisionStamp.quarter;
+        if (!alreadyQueued && Math.random() < config.executionEventChance) {
+          decisionRequests.push({
+            kind: 'grantExecutionEvent',
+            grant: nextGrant,
+            year: decisionStamp.year,
+            quarter: decisionStamp.quarter,
+          });
+          events.push({
+            title: '课题执行事件',
+            detail: `「${grant.title}」执行阶段出现新机会/风险，需要你拍板。`,
+          });
+          nextGrant = {
+            ...nextGrant,
+            lastExecutionEventYear: decisionStamp.year,
+            lastExecutionEventQuarter: decisionStamp.quarter,
+          };
+        }
+      }
+
+      if (closureDueStamp && isQuarterReached(currentStamp, closureDueStamp)) {
+        const tier = nextGrant.tier ?? 'C';
+        const requirement = config.tiers[tier].requirement;
+        const papers = projectPapers.filter((paper) => paper.grantId === nextGrant.id);
+        const submissions = papers.filter((paper) => paper.status !== 'awaitingVenue').length;
+        const accepted = papers.filter((paper) => paper.status === 'accepted').length;
+        const qualityOk = requirement.requiredTopTierAtLeast
+          ? papers.some(
+              (paper) =>
+                paper.status === 'accepted' && isVenueTierAtLeast(paper.venueTier, requirement.requiredTopTierAtLeast!),
+            )
+          : true;
+        const passed =
+          submissions >= requirement.requiredSubmissions &&
+          accepted >= requirement.requiredAccepted &&
+          qualityOk;
+
+        if (passed) {
+          addStatDelta('reputation', tier === 'A' ? 2 : tier === 'B' ? 1 : 0);
+          events.push({
+            title: '课题结题',
+            detail: `「${grant.title}」已按要求结题（提交 ${submissions} / 录用 ${accepted}）。`,
+          });
+          return { ...nextGrant, status: 'completed' };
+        }
+
+        addStatDelta('reputation', tier === 'A' ? -2 : tier === 'B' ? -1 : 0);
+        addStatDelta('morale', -3);
+        events.push({
+          title: '课题结题未通过',
+          detail: `「${grant.title}」未按期满足结题要求（提交 ${submissions}/${requirement.requiredSubmissions} · 录用 ${accepted}/${requirement.requiredAccepted}）。`,
+        });
+        return { ...nextGrant, status: 'failed' };
+      }
+
+      return nextGrant;
+    }
+
+    return grant;
+  });
+
+  return { updatedGrants, statDelta, decisions, decisionRequests, events, newPapers };
 };
 
 const buildStudentPaperFallbackDecision = ({
@@ -795,7 +1597,8 @@ const calcMentorDelta = (value: number, step: number, minDelta: number, maxDelta
 const applyMentorInfluence = (mentee: StudentPersona, mentor: StudentPersona) => {
   const mentorTraits = (mentor.traits ?? [])
     .map((traitId) => studentTraitById.get(traitId))
-    .filter((trait): trait is StudentTrait => Boolean(trait));
+    .filter((trait): trait is StudentTrait => Boolean(trait))
+    .filter((trait) => trait.category === 'sub');
 
   const traitDeltas = collectTraitInfluence(mentorTraits);
   const next = { ...mentee };
@@ -1082,6 +1885,105 @@ type SettingsModalProps = {
   isResetting: boolean;
 };
 
+type NoticeModalProps = {
+  title: string;
+  detail: string;
+  onClose: () => void;
+};
+
+const NoticeModal = ({ title, detail, onClose }: NoticeModalProps) => (
+  <div className="modal-backdrop">
+    <div className="settings-modal">
+      <header className="settings-head">
+        <h3>{title}</h3>
+        <button className="icon-button ghost" type="button" onClick={onClose}>
+          关闭
+        </button>
+      </header>
+      <div className="settings-body">
+        <p style={{ margin: 0, lineHeight: 1.6 }}>{detail}</p>
+        <button className="primary" type="button" onClick={onClose}>
+          我知道了
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+const InterviewingStudentCard = () => (
+  <article className="student-card loading">
+    <div className="student-head">
+      <div className="student-name-row">
+        <div>
+          <h4>候选人</h4>
+          <small className="muted-text">正在面试</small>
+        </div>
+        <span className="badge tag-main neutral">待定</span>
+      </div>
+    </div>
+    <div className="student-actions">
+      <button className="ghost" type="button" disabled>
+        分配指导
+      </button>
+    </div>
+    <div className="student-story">面试中，正在了解候选人的研究经历与团队适配度。</div>
+    <div className="student-bottom">
+      <div className="student-traits">
+        <span className="trait-chip sub-trait">面试进行中</span>
+        <span className="trait-chip sub-trait">档案整理中</span>
+      </div>
+      <div className="student-progress">
+        <div className="progress-item">
+          <div className="progress-head">
+            <span>论文进度</span>
+            <span>--</span>
+          </div>
+          <div className="progress-bar paper">
+            <span style={{ width: '0%' }} />
+          </div>
+        </div>
+        <div className="progress-row">
+          <div className="progress-item">
+            <div className="progress-head">
+              <span>压力</span>
+              <span>--</span>
+            </div>
+            <div className="progress-bar stress">
+              <span style={{ width: '0%' }} />
+            </div>
+          </div>
+          <div className="progress-item">
+            <div className="progress-head">
+              <span>心态</span>
+              <span>--</span>
+            </div>
+            <div className="progress-bar mental">
+              <span style={{ width: '0%' }} />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="student-footer">
+        <div className="student-stats-row">
+          <div className="mini-stat">
+            <span className="label">天赋</span>
+            <span className="value">--</span>
+          </div>
+          <div className="mini-stat">
+            <span className="label">勤奋</span>
+            <span className="value">--</span>
+          </div>
+          <div className="mini-stat">
+            <span className="label">运势</span>
+            <span className="value">--</span>
+          </div>
+        </div>
+        <div className="mentor-status">学生面试中...</div>
+      </div>
+    </div>
+  </article>
+);
+
 const SettingsModal = ({ onClose, onReset, mentorName, isResetting }: SettingsModalProps) => (
   <div className="modal-backdrop">
     <div className="settings-modal">
@@ -1152,7 +2054,7 @@ const DecisionModal = ({ decision, queueCount, onClose, onChoose }: DecisionModa
     <div className="decision-modal">
       <header className="decision-head">
         <div>
-          <p className="eyebrow small">待处理 {queueCount}</p>
+          <p className="eyebrow small">需要决策 · ACTION REQUIRED · 待处理 {queueCount}</p>
           <h3>{decision.title}</h3>
         </div>
         <button className="icon-button ghost" type="button" onClick={onClose}>
@@ -1176,6 +2078,68 @@ const DecisionModal = ({ decision, queueCount, onClose, onChoose }: DecisionModa
             </button>
           ))}
         </div>
+      </div>
+    </div>
+  </div>
+);
+
+type QuarterSettlementModalProps = {
+  title: string;
+  detail: string;
+};
+
+const QuarterSettlementModal = ({ title, detail }: QuarterSettlementModalProps) => (
+  <div className="modal-backdrop larger settlement">
+    <div className="settings-modal">
+      <header className="settings-head">
+        <h3>{title}</h3>
+      </header>
+      <div className="settings-body">
+        <p style={{ margin: 0, lineHeight: 1.6 }}>{detail}</p>
+        <div className="loading-dots" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <p className="muted-text" style={{ margin: 0 }}>
+          系统正在统一结算并生成随机事件，请稍候…
+        </p>
+      </div>
+    </div>
+  </div>
+);
+
+type DecisionResultModalProps = {
+  result: DecisionResult;
+  onClose: () => void;
+};
+
+const DecisionResultModal = ({ result, onClose }: DecisionResultModalProps) => (
+  <div className="modal-backdrop larger result">
+    <div className="decision-modal result-modal">
+      <header className="decision-head result-head">
+        <div>
+          <p className="eyebrow small">事件结局 · RESULT</p>
+          <h3>{result.headline}</h3>
+        </div>
+        <button className="icon-button ghost" type="button" onClick={onClose}>
+          继续
+        </button>
+      </header>
+      <div className="decision-body">
+        <p className="decision-prompt">{result.detail}</p>
+        {result.chips.length > 0 && (
+          <div className="result-chips" role="list">
+            {result.chips.map((chip) => (
+              <span key={chip.id} className={`result-chip ${chip.tone}`} role="listitem">
+                {chip.text}
+              </span>
+            ))}
+          </div>
+        )}
+        <button className="primary result-continue" type="button" onClick={onClose}>
+          继续（Continue）
+        </button>
       </div>
     </div>
   </div>
@@ -1229,6 +2193,10 @@ type DecisionOption = {
   meta?: Record<string, unknown>;
 };
 
+type ResultChipTone = 'positive' | 'negative' | 'neutral';
+type DecisionResultChip = { id: string; text: string; tone: ResultChipTone };
+type DecisionResult = { title: string; headline: string; detail: string; chips: DecisionResultChip[] };
+
 type DecisionEvent =
   | {
       id: string;
@@ -1252,6 +2220,26 @@ type DecisionEvent =
     }
   | {
       id: string;
+      kind: 'grantReviewEvent';
+      title: string;
+      prompt: string;
+      options: DecisionOption[];
+      createdYear: number;
+      createdQuarter: MentorStats['quarter'];
+      context: { grantId: string };
+    }
+  | {
+      id: string;
+      kind: 'grantExecutionEvent';
+      title: string;
+      prompt: string;
+      options: DecisionOption[];
+      createdYear: number;
+      createdQuarter: MentorStats['quarter'];
+      context: { grantId: string };
+    }
+  | {
+      id: string;
       kind: 'studentPaperEvent';
       title: string;
       prompt: string;
@@ -1259,6 +2247,16 @@ type DecisionEvent =
       createdYear: number;
       createdQuarter: MentorStats['quarter'];
       context: { studentId: string };
+    }
+  | {
+      id: string;
+      kind: 'quarterEvent';
+      title: string;
+      prompt: string;
+      options: DecisionOption[];
+      createdYear: number;
+      createdQuarter: MentorStats['quarter'];
+      context: { studentId: string | null };
     };
 
 const applyMentorDelta = (stats: MentorStats, delta: StatDelta) => ({
@@ -1285,7 +2283,7 @@ const applyStudentDelta = (student: StudentPersona, delta: StudentDelta): Studen
   mentalState:
     delta.mentalState === undefined ? student.mentalState : clampValue(student.mentalState + delta.mentalState, 0, 100),
   contribution:
-    delta.contribution === undefined ? student.contribution : clampValue(student.contribution + delta.contribution, 0, 250),
+    delta.contribution === undefined ? student.contribution : clampValue(student.contribution + delta.contribution, 0, 100),
   pendingPapers:
     delta.pendingPapers === undefined ? student.pendingPapers : Math.max(student.pendingPapers + delta.pendingPapers, 0),
   totalPapers:
@@ -1377,9 +2375,13 @@ function App() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [teamMessage, setTeamMessage] = useState<string | null>(null);
+  const [noticeQueue, setNoticeQueue] = useState<Array<{ id: string; title: string; detail: string }>>([]);
+  const [recruitInterviewing, setRecruitInterviewing] = useState<Array<{ id: string }>>([]);
   const [teamMembers, setTeamMembers] = useState<StudentPersona[]>(
     () => storedState?.teamMembers ?? storedTeamMembers ?? [],
   );
+  const teamGridRef = useRef<HTMLDivElement | null>(null);
+  const [teamGridMaxHeight, setTeamGridMaxHeight] = useState<number | null>(null);
   const [teamLoading, setTeamLoading] = useState(false);
   const [teamError, setTeamError] = useState<string | null>(null);
   const [teamBootstrapped, setTeamBootstrapped] = useState(() =>
@@ -1387,6 +2389,8 @@ function App() {
   );
   const [isResetting, setIsResetting] = useState(false);
   const [moraleMessage, setMoraleMessage] = useState<string | null>(null);
+  const [isQuarterSettling, setIsQuarterSettling] = useState(false);
+  const [quarterSettlementDetail, setQuarterSettlementDetail] = useState<string>('系统待命');
   const [activityUses, setActivityUses] = useState(0);
   const [activitySeed, setActivitySeed] = useState<{ year: number; quarter: number } | null>(null);
   const [activityPool, setActivityPool] = useState<
@@ -1397,8 +2401,8 @@ function App() {
   const [projectPapers, setProjectPapers] = useState<ProjectPaper[]>(
     () => storedState?.projectPapers ?? [],
   );
-  const [grantApplications, setGrantApplications] = useState<GrantState[]>(
-    () => storedState?.grantApplications ?? [],
+  const [grantApplications, setGrantApplications] = useState<GrantState[]>(     
+    () => normalizeGrantApplications(storedState?.grantApplications),
   );
   const [projectDraftTitle, setProjectDraftTitle] = useState('');
   const [projectDraftCategory, setProjectDraftCategory] = useState<ResearchProject['category']>('校内课题');
@@ -1436,6 +2440,7 @@ function App() {
     () => storedState?.pendingDecisions ?? [],
   );
   const [activeDecisionId, setActiveDecisionId] = useState<string | null>(null);
+  const [activeDecisionResult, setActiveDecisionResult] = useState<DecisionResult | null>(null);
 
   const activeDecision = useMemo(() => {
     if (!pendingDecisions.length) return null;
@@ -1484,19 +2489,10 @@ function App() {
     { label: '心态', value: stats.morale.value, max: stats.morale.max, color: stats.morale.color },
     { label: '学术', value: stats.academia.value, max: stats.academia.max, color: stats.academia.color },
     { label: '行政', value: stats.admin.value, max: stats.admin.max, color: stats.admin.color },
-    { label: '纪要', value: stats.integrity.value, max: stats.integrity.max, color: stats.integrity.color },
+    { label: '学术不端嫌疑', value: stats.integrity.value, max: stats.integrity.max, color: stats.integrity.color },
   ];
   const freeActivityLimit = 3;
   const remainingFreeUses = Math.max(freeActivityLimit - activityUses, 0);
-  const grantRules: Array<{
-    type: GrantType;
-    openQuarter: MentorStats['quarter'];
-    cost: number;
-    reward: number;
-  }> = [
-    { type: '国自然', openQuarter: 1, cost: 12000, reward: 200000 },
-    { type: '国社科', openQuarter: 2, cost: 9000, reward: 160000 },
-  ];
 
   const pushEvent = useCallback((title: string, detail: string) => {
     setEventLog((prev) => [
@@ -1505,23 +2501,475 @@ function App() {
     ]);
   }, []);
 
+  const pushNotice = useCallback((title: string, detail: string) => {
+    setNoticeQueue((prev) => [
+      ...prev,
+      { id: `notice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, title, detail },
+    ]);
+  }, []);
+
+  const removeStudentFromAllAssignments = useCallback((studentId: string) => {
+    setSelectedMentorId(null);
+    setTeamMembers((prev) =>
+      prev
+        .filter((student) => student.id !== studentId)
+        .map((student) => {
+          if (student.studentType === 'YOUNG_TEACHER') return student;
+          const mentorId = student.mentorId === studentId ? undefined : student.mentorId;
+          const isBeingMentored = mentorId ? student.isBeingMentored : false;
+          return { ...student, mentorId, isBeingMentored };
+        }),
+    );
+    setProjects((prev) =>
+      prev.map((project) => ({
+        ...project,
+        assignedStudentIds: project.assignedStudentIds.filter((id) => id !== studentId),
+      })),
+    );
+    setGrantApplications((prev) =>
+      prev.map((grant) => ({
+        ...grant,
+        assignedStudentIds: grant.assignedStudentIds.filter((id) => id !== studentId),
+      })),
+    );
+    setProjectPapers((prev) =>
+      prev.map((paper) => (paper.leadStudentId === studentId ? { ...paper, leadStudentId: null } : paper)),
+    );
+  }, []);
+
+  const requestGrantReviewDecision = useCallback(
+    async (payload: {
+      grant: GrantState;
+      year: number;
+      quarter: MentorStats['quarter'];
+      mode: 'submission' | 'review';
+      mentor: Record<string, unknown>;
+      stats: Record<string, unknown>;
+      team: { members: Array<Record<string, unknown>> };
+    }) => {
+      const asInt = (value: unknown, min: number, max: number) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+        return Math.round(clampValue(value, min, max));
+      };
+
+      const normalizeEffects = (raw: unknown) => {
+        if (!raw || typeof raw !== 'object') return undefined;
+        const obj = raw as Record<string, unknown>;
+        const statsRaw = obj.stats && typeof obj.stats === 'object' ? (obj.stats as Record<string, unknown>) : undefined;
+        const studentRaw = obj.student && typeof obj.student === 'object' ? (obj.student as Record<string, unknown>) : undefined;
+
+        const statsDelta: StatDelta = {};
+        if (statsRaw) {
+          const funding = asInt(statsRaw.funding, -40000, 60000);
+          const reputation = asInt(statsRaw.reputation, -5, 6);
+          const morale = asInt(statsRaw.morale, -12, 12);
+          const academia = asInt(statsRaw.academia, -8, 10);
+          const admin = asInt(statsRaw.admin, -8, 10);
+          const integrity = asInt(statsRaw.integrity, -8, 12);
+          if (funding) statsDelta.funding = funding;
+          if (reputation) statsDelta.reputation = reputation;
+          if (morale) statsDelta.morale = morale;
+          if (academia) statsDelta.academia = academia;
+          if (admin) statsDelta.admin = admin;
+          if (integrity) statsDelta.integrity = integrity;
+        }
+
+        const studentDelta: StudentDelta = {};
+        if (studentRaw) {
+          const stress = asInt(studentRaw.stress, -15, 18);
+          const mentalState = asInt(studentRaw.mentalState, -15, 15);
+          const contribution = asInt(studentRaw.contribution, -30, 30);
+          const diligence = asInt(studentRaw.diligence, -6, 6);
+          const talent = asInt(studentRaw.talent, -6, 6);
+          const luck = asInt(studentRaw.luck, -6, 6);
+          const pendingPapers = asInt(studentRaw.pendingPapers, -1, 1);
+          const totalPapers = asInt(studentRaw.totalPapers, -1, 1);
+          if (stress) studentDelta.stress = stress;
+          if (mentalState) studentDelta.mentalState = mentalState;
+          if (contribution) studentDelta.contribution = contribution;
+          if (diligence) studentDelta.diligence = diligence;
+          if (talent) studentDelta.talent = talent;
+          if (luck) studentDelta.luck = luck;
+          if (pendingPapers) studentDelta.pendingPapers = pendingPapers;
+          if (totalPapers) studentDelta.totalPapers = totalPapers;
+        }
+
+        const hasStats = Object.keys(statsDelta).length > 0;
+        const hasStudent = Object.keys(studentDelta).length > 0;
+        if (!hasStats && !hasStudent) return undefined;
+        return { ...(hasStats ? { stats: statsDelta } : {}), ...(hasStudent ? { student: studentDelta } : {}) };
+      };
+
+      const normalizeOption = (raw: unknown, index: number): DecisionOption | null => {
+        if (!raw || typeof raw !== 'object') return null;
+        const obj = raw as Record<string, unknown>;
+        const id = String(obj.id ?? ['A', 'B', 'C'][index] ?? '').trim();
+        const label = String(obj.label ?? '').trim();
+        const outcome = String(obj.outcome ?? '').trim();
+        if (!id || !label || !outcome) return null;
+
+        const hint = typeof obj.hint === 'string' ? obj.hint.trim() : undefined;
+        const effects = normalizeEffects(obj.effects);
+
+        const metaRaw = obj.meta && typeof obj.meta === 'object' ? (obj.meta as Record<string, unknown>) : undefined;
+        const scoreDelta = asInt(metaRaw?.scoreDelta, -18, 18);
+        const luckDelta = asInt(metaRaw?.luckDelta, -12, 12);
+        const meta =
+          scoreDelta || luckDelta
+            ? { ...(scoreDelta ? { scoreDelta } : {}), ...(luckDelta ? { luckDelta } : {}) }
+            : undefined;
+
+        return { id, label, hint, outcome, effects, meta };
+      };
+
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/events/grant-review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error('Grant review event response not ok');
+        const data = (await res.json()) as Record<string, unknown>;
+        const title = String(data.title ?? '').trim();
+        const prompt = String(data.prompt ?? '').trim();
+        const optionsRaw = Array.isArray(data.options) ? (data.options as unknown[]) : [];
+        const options = optionsRaw.map(normalizeOption).filter(Boolean) as DecisionOption[];
+        if (!title || !prompt || options.length < 2) throw new Error('Invalid grant review decision payload');
+
+        return {
+          id: `dec-grant-review-${payload.grant.id}-${payload.year}-${payload.quarter}-${Math.random()
+            .toString(36)
+            .slice(2, 6)}`,
+          kind: 'grantReviewEvent',
+          createdYear: payload.year,
+          createdQuarter: payload.quarter,
+          context: { grantId: payload.grant.id },
+          title,
+          prompt,
+          options,
+        } satisfies DecisionEvent;
+      } catch (error) {
+        console.error('Grant review event generation failed', error);
+        return buildGrantReviewDecision({
+          grant: payload.grant,
+          year: payload.year,
+          quarter: payload.quarter,
+          mode: payload.mode,
+        });
+      }
+    },
+    [],
+  );
+
+  const requestGrantExecutionDecision = useCallback(
+    async (payload: {
+      grant: GrantState;
+      year: number;
+      quarter: MentorStats['quarter'];
+      mentor: Record<string, unknown>;
+      stats: Record<string, unknown>;
+      team: { members: Array<Record<string, unknown>> };
+    }) => {
+      const asInt = (value: unknown, min: number, max: number) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+        return Math.round(clampValue(value, min, max));
+      };
+
+        const normalizeEffects = (raw: unknown) => {
+          if (!raw || typeof raw !== 'object') return undefined;
+          const obj = raw as Record<string, unknown>;
+          const statsRaw = obj.stats && typeof obj.stats === 'object' ? (obj.stats as Record<string, unknown>) : undefined;
+          const studentRaw = obj.student && typeof obj.student === 'object' ? (obj.student as Record<string, unknown>) : undefined;
+
+          const statsDelta: StatDelta = {};
+          if (statsRaw) {
+            const funding = asInt(statsRaw.funding, -40000, 60000);
+            const reputation = asInt(statsRaw.reputation, -5, 6);
+            const morale = asInt(statsRaw.morale, -12, 12);
+            const academia = asInt(statsRaw.academia, -8, 10);
+            const admin = asInt(statsRaw.admin, -8, 10);
+            const integrity = asInt(statsRaw.integrity, -8, 12);
+            if (funding) statsDelta.funding = funding;
+            if (reputation) statsDelta.reputation = reputation;
+            if (morale) statsDelta.morale = morale;
+            if (academia) statsDelta.academia = academia;
+          if (admin) statsDelta.admin = admin;
+          if (integrity) statsDelta.integrity = integrity;
+        }
+
+          const studentDelta: StudentDelta = {};
+          if (studentRaw) {
+            const stress = asInt(studentRaw.stress, -15, 18);
+            const mentalState = asInt(studentRaw.mentalState, -15, 15);
+            const contribution = asInt(studentRaw.contribution, -30, 30);
+            const diligence = asInt(studentRaw.diligence, -6, 6);
+            const talent = asInt(studentRaw.talent, -6, 6);
+            const luck = asInt(studentRaw.luck, -6, 6);
+            const pendingPapers = asInt(studentRaw.pendingPapers, -1, 1);
+            const totalPapers = asInt(studentRaw.totalPapers, -1, 1);
+            if (stress) studentDelta.stress = stress;
+            if (mentalState) studentDelta.mentalState = mentalState;
+            if (contribution) studentDelta.contribution = contribution;
+            if (diligence) studentDelta.diligence = diligence;
+          if (talent) studentDelta.talent = talent;
+          if (luck) studentDelta.luck = luck;
+          if (pendingPapers) studentDelta.pendingPapers = pendingPapers;
+          if (totalPapers) studentDelta.totalPapers = totalPapers;
+        }
+
+        const hasStats = Object.keys(statsDelta).length > 0;
+        const hasStudent = Object.keys(studentDelta).length > 0;
+        if (!hasStats && !hasStudent) return undefined;
+        return { ...(hasStats ? { stats: statsDelta } : {}), ...(hasStudent ? { student: studentDelta } : {}) };
+      };
+
+      const normalizeOption = (raw: unknown, index: number): DecisionOption | null => {
+        if (!raw || typeof raw !== 'object') return null;
+        const obj = raw as Record<string, unknown>;
+        const id = String(obj.id ?? ['A', 'B', 'C'][index] ?? '').trim();
+        const label = String(obj.label ?? '').trim();
+        const outcome = String(obj.outcome ?? '').trim();
+        if (!id || !label || !outcome) return null;
+
+        const hint = typeof obj.hint === 'string' ? obj.hint.trim() : undefined;
+        const effects = normalizeEffects(obj.effects);
+
+        const metaRaw = obj.meta && typeof obj.meta === 'object' ? (obj.meta as Record<string, unknown>) : undefined;
+        const progressDelta = asInt(metaRaw?.progressDelta, -20, 35);
+        const meta = progressDelta ? { progressDelta } : undefined;
+
+        return { id, label, hint, outcome, effects, meta };
+      };
+
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/events/grant-execution`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error('Grant execution event response not ok');
+        const data = (await res.json()) as Record<string, unknown>;
+        const title = String(data.title ?? '').trim();
+        const prompt = String(data.prompt ?? '').trim();
+        const optionsRaw = Array.isArray(data.options) ? (data.options as unknown[]) : [];
+        const options = optionsRaw.map(normalizeOption).filter(Boolean) as DecisionOption[];
+        if (!title || !prompt || options.length < 2) throw new Error('Invalid grant execution decision payload');
+
+        return {
+          id: `dec-grant-exec-${payload.grant.id}-${payload.year}-${payload.quarter}-${Math.random().toString(36).slice(2, 6)}`,
+          kind: 'grantExecutionEvent',
+          createdYear: payload.year,
+          createdQuarter: payload.quarter,
+          context: { grantId: payload.grant.id },
+          title,
+          prompt,
+          options,
+        } satisfies DecisionEvent;
+      } catch (error) {
+        console.error('Grant execution event generation failed', error);
+        return buildGrantExecutionDecision({
+          grant: payload.grant,
+          year: payload.year,
+          quarter: payload.quarter,
+        });
+      }
+    },
+    [],
+  );
+
+  const requestQuarterlyEvents = useCallback(
+    async (payload: {
+      year: number;
+      quarter: MentorStats['quarter'];
+      mentor: Record<string, unknown>;
+      stats: Record<string, unknown>;
+      team: { members: Array<Record<string, unknown>> };
+      count?: number;
+    }) => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/events/quarterly-batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error('Quarterly event response not ok');
+        const data = (await res.json()) as { events?: unknown };
+        if (!Array.isArray(data.events)) return [] as DecisionEvent[];
+
+      const normalizeOption = (raw: unknown, index: number): DecisionOption | null => {
+        if (!raw || typeof raw !== 'object') return null;
+        const obj = raw as Record<string, unknown>;
+        const id = String(obj.id ?? ['A', 'B', 'C'][index] ?? '').trim();
+        const label = String(obj.label ?? '').trim();
+        const outcome = String(obj.outcome ?? '').trim();
+        if (!id || !label || !outcome) return null;
+        const hint = typeof obj.hint === 'string' ? obj.hint.trim() : undefined;
+        const meta = obj.meta && typeof obj.meta === 'object' ? (obj.meta as Record<string, unknown>) : undefined;
+        const studentAction =
+          typeof meta?.studentAction === 'string' && (meta.studentAction === 'leave' || meta.studentAction === 'stay')
+            ? meta.studentAction
+            : undefined;
+        const effects = obj.effects && typeof obj.effects === 'object' ? (obj.effects as Record<string, unknown>) : undefined;
+        const statsDelta = effects?.stats && typeof effects.stats === 'object' ? (effects.stats as StatDelta) : undefined;
+        const studentDelta =
+          effects?.student && typeof effects.student === 'object' ? (effects.student as StudentDelta) : undefined;
+        const mergedEffects =
+          statsDelta || studentDelta
+            ? { ...(statsDelta ? { stats: statsDelta } : {}), ...(studentDelta ? { student: studentDelta } : {}) }
+            : undefined;
+        return {
+          id,
+          label,
+          hint,
+          outcome,
+          effects: mergedEffects,
+          meta: studentAction ? { studentAction } : undefined,
+        };
+      };
+
+      return data.events
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const obj = item as Record<string, unknown>;
+          const title = String(obj.title ?? '').trim();
+          const prompt = String(obj.prompt ?? '').trim();
+          const optionsRaw = Array.isArray(obj.options) ? (obj.options as unknown[]) : [];
+          const options = optionsRaw.map(normalizeOption).filter(Boolean) as DecisionOption[];
+          const targetStudentId = typeof obj.targetStudentId === 'string' ? obj.targetStudentId : null;
+          if (!title || !prompt || options.length < 2) return null;
+          return {
+            id: `dec-quarter-${payload.year}-${payload.quarter}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            kind: 'quarterEvent',
+            title,
+            prompt,
+            options,
+            createdYear: payload.year,
+            createdQuarter: payload.quarter,
+            context: { studentId: targetStudentId },
+          } satisfies DecisionEvent;
+        })
+        .filter(Boolean) as DecisionEvent[];
+      } catch (error) {
+        console.error('Quarterly batch event generation failed', error);
+        return [] as DecisionEvent[];
+      }
+    },
+    [],
+  );
+
+  const activeNotice = noticeQueue[0] ?? null;
+  const closeActiveNotice = useCallback(() => {
+    setNoticeQueue((prev) => (prev.length ? prev.slice(1) : prev));
+  }, []);
+
   useEffect(() => {
     if (stage !== 'briefing') return;
-    if (teamMembers.length < 2) return;
+    if (!teamMembers.length) return;
     const seen = new Set<string>();
-    let removed = 0;
-    const deduped = teamMembers.filter((student) => {
-      if (seen.has(student.id)) {
-        removed += 1;
-        return false;
+    let fixed = 0;
+    let hasDuplicate = false;
+    const nextTeam = teamMembers.map((student) => {
+      const rawId = (student as unknown as Record<string, unknown>).id;
+      const originalId = typeof rawId === 'string' ? rawId.trim() : '';
+      let id = originalId || buildLocalStudentId();
+      if (seen.has(id)) {
+        hasDuplicate = true;
+        id = buildLocalStudentId();
       }
-      seen.add(student.id);
-      return true;
+      seen.add(id);
+      if (id === student.id && originalId) return student;
+      fixed += 1;
+      return { ...student, id };
     });
-    if (!removed) return;
-    setTeamMembers(deduped);
-    pushEvent('数据修复', `已清理 ${removed} 个重复学生条目。`);
+    if (!fixed && !hasDuplicate) return;
+    setSelectedMentorId(null);
+    setTeamMembers(nextTeam.map((student) => ({ ...student, mentorId: undefined, isBeingMentored: false })));
+    const validIds = new Set(nextTeam.map((student) => student.id));
+    setProjects((prev) =>
+      prev.map((project) => ({
+        ...project,
+        assignedStudentIds: project.assignedStudentIds.filter((id) => validIds.has(id)),
+      })),
+    );
+    setGrantApplications((prev) =>
+      prev.map((grant) => ({
+        ...grant,
+        assignedStudentIds: grant.assignedStudentIds.filter((id) => validIds.has(id)),
+      })),
+    );
+    setProjectPapers((prev) =>
+      prev.map((paper) => {
+        if (!paper.leadStudentId) return paper;
+        if (validIds.has(paper.leadStudentId)) return paper;
+        return { ...paper, leadStudentId: null };
+      }),
+    );
+    pushEvent('数据修复', '已修复学生ID冲突/缺失，避免“在投/发表”串到其他学生（指导关系已清空）。');
   }, [stage, teamMembers, pushEvent]);
+
+  useEffect(() => {
+    if (stage !== 'briefing') return;
+    if (!teamMembers.length) return;
+    const needsRepair = teamMembers.some((student) => {
+      const pending = normalizePaperCount((student as unknown as Record<string, unknown>).pendingPapers);
+      const total = normalizePaperCount((student as unknown as Record<string, unknown>).totalPapers);
+      return pending !== student.pendingPapers || total !== student.totalPapers;
+    });
+    if (!needsRepair) return;
+    setTeamMembers((prev) =>
+      prev.map((student) => ({
+        ...student,
+        pendingPapers: normalizePaperCount((student as unknown as Record<string, unknown>).pendingPapers),
+        totalPapers: normalizePaperCount((student as unknown as Record<string, unknown>).totalPapers),
+      })),
+    );
+    pushEvent('数据修复', '已修复学生论文统计字段（在投/发表）。');
+  }, [stage, teamMembers, pushEvent]);
+
+  useEffect(() => {
+    if (stage !== 'briefing' || activeTab !== 'team') {
+      setTeamGridMaxHeight(null);
+      return;
+    }
+    const grid = teamGridRef.current;
+    if (!grid) {
+      setTeamGridMaxHeight(null);
+      return;
+    }
+
+    if (teamMembers.length <= 6) {
+      setTeamGridMaxHeight(null);
+      return;
+    }
+
+    let raf = 0;
+    const updateHeight = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const cards = Array.from(grid.querySelectorAll<HTMLElement>('.student-card')).filter(
+          (card) => !card.classList.contains('loading'),
+        );
+        if (cards.length <= 6) {
+          setTeamGridMaxHeight(null);
+          return;
+        }
+        const maxBottom = Math.max(...cards.slice(0, 6).map((card) => card.offsetTop + card.offsetHeight));
+        setTeamGridMaxHeight(maxBottom + 8);
+      });
+    };
+
+    updateHeight();
+
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateHeight);
+    resizeObserver?.observe(grid);
+    window.addEventListener('resize', updateHeight);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, [stage, activeTab, teamMembers, teamLoading]);
 
   const handleOpenDecisionQueue = useCallback(() => {
     if (!pendingDecisions.length) return;
@@ -1535,22 +2983,149 @@ function App() {
 
       pushEvent(decision.title, option.outcome);
 
+      const resultChips: DecisionResultChip[] = [];
+      const pushChip = (text: string, tone: ResultChipTone) => {
+        resultChips.push({ id: `chip-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text, tone });
+      };
+
+      const formatSigned = (value: number) => `${value > 0 ? '+' : ''}${value}`;
+      const chipTone = (key: string, value: number): ResultChipTone => {
+        if (!value) return 'neutral';
+        if (key === 'stress') return value < 0 ? 'positive' : 'negative';
+        if (key === 'morale' || key === 'mentalState') return value > 0 ? 'positive' : 'negative';
+        if (key === 'funding') return value > 0 ? 'positive' : 'negative';
+        if (key === 'integrity') return value < 0 ? 'positive' : 'negative';
+        if (key === 'reputation' || key === 'academia' || key === 'admin') {
+          return value > 0 ? 'positive' : 'negative';
+        }
+        if (key === 'totalPapers') return value > 0 ? 'positive' : 'negative';
+        return value > 0 ? 'positive' : 'negative';
+      };
+
       if (option.effects?.stats) {
         setStats((prev) => applyMentorDelta(prev, option.effects?.stats ?? {}));
       }
 
-      const studentTargetId = (() => {
-        if (decision.kind === 'studentPaperEvent') return decision.context.studentId;
+      const paperLeadStudentId =
+        decision.kind === 'projectVenue' || decision.kind === 'projectRevision'
+          ? projectPapers.find((paper) => paper.id === decision.context.projectPaperId)?.leadStudentId ?? null
+          : null;
+      const grantParticipantIds =
+        decision.kind === 'grantReviewEvent' || decision.kind === 'grantExecutionEvent'
+          ? grantApplications.find((grant) => grant.id === decision.context.grantId)?.assignedStudentIds ?? []
+          : [];
+      const studentTargetIds = (() => {
+        if (decision.kind === 'studentPaperEvent') return [decision.context.studentId];
         if (decision.kind === 'projectVenue' || decision.kind === 'projectRevision') {
-          return projectPapers.find((paper) => paper.id === decision.context.projectPaperId)?.leadStudentId ?? null;
+          return paperLeadStudentId ? [paperLeadStudentId] : [];
         }
-        return null;
+        if (decision.kind === 'grantReviewEvent' || decision.kind === 'grantExecutionEvent') return grantParticipantIds;
+        if (decision.kind === 'quarterEvent') return decision.context.studentId ? [decision.context.studentId] : [];
+        return [];
       })();
 
-      if (studentTargetId && option.effects?.student) {
+      const targetCount = studentTargetIds.length;
+      const targetName =
+        targetCount === 1 ? teamMembers.find((student) => student.id === studentTargetIds[0])?.name ?? '学生' : '学生';
+
+      const statLabel: Record<string, string> = {
+        morale: '心态',
+        academia: '学术',
+        admin: '行政',
+        integrity: '学术不端嫌疑',
+        funding: '经费',
+        reputation: '声望',
+      };
+      if (option.effects?.stats) {
+        Object.entries(option.effects.stats).forEach(([key, raw]) => {
+          if (typeof raw !== 'number' || !raw) return;
+          const label = statLabel[key] ?? key;
+          if (key === 'funding') {
+            const abs = Math.abs(raw);
+            const prefix = raw > 0 ? '+￥' : '-￥';
+            pushChip(`${label} ${prefix}${abs.toLocaleString()}`, chipTone(key, raw));
+            return;
+          }
+          pushChip(`${label} ${formatSigned(raw)}`, chipTone(key, raw));
+        });
+      }
+
+      const studentLabel: Record<string, { label: string; suffix?: string }> = {
+        stress: { label: '压力' },
+        mentalState: { label: '心态' },
+        diligence: { label: '勤奋' },
+        talent: { label: '天赋' },
+        luck: { label: '运势' },
+        contribution: { label: '论文进度', suffix: '%' },
+        pendingPapers: { label: '在投' },
+        totalPapers: { label: '发表' },
+      };
+      if (targetCount && option.effects?.student) {
+        Object.entries(option.effects.student).forEach(([key, raw]) => {
+          if (typeof raw !== 'number' || !raw) return;
+          const info = studentLabel[key] ?? { label: key };
+          const total = targetCount > 1 ? raw * targetCount : raw;
+          const prefix = targetCount > 1 ? '学生总' : `${targetName} `;
+          const suffix = info.suffix ?? '';
+          pushChip(`${prefix}${info.label} ${formatSigned(total)}${suffix}`, chipTone(key, total));
+        });
+      }
+
+      if (decision.kind === 'grantReviewEvent') {
+        const scoreDelta = typeof option.meta?.scoreDelta === 'number' ? option.meta.scoreDelta : 0;
+        const luckDelta = typeof option.meta?.luckDelta === 'number' ? option.meta.luckDelta : 0;
+        if (scoreDelta) pushChip(`评审分 ${formatSigned(scoreDelta)}`, scoreDelta > 0 ? 'positive' : 'negative');
+        if (luckDelta) pushChip(`评审运气 ${formatSigned(luckDelta)}`, luckDelta > 0 ? 'positive' : 'negative');
+      }
+      if (decision.kind === 'grantExecutionEvent') {
+        const progressDelta = typeof option.meta?.progressDelta === 'number' ? option.meta.progressDelta : 0;
+        if (progressDelta) pushChip(`写作进度 ${formatSigned(progressDelta)}%`, progressDelta > 0 ? 'positive' : 'negative');
+      }
+
+      if (studentTargetIds.length && option.effects?.student) {
         setTeamMembers((prev) =>
-          prev.map((student) => (student.id === studentTargetId ? applyStudentDelta(student, option.effects?.student ?? {}) : student)),
+          prev.map((student) =>
+            studentTargetIds.includes(student.id) ? applyStudentDelta(student, option.effects?.student ?? {}) : student,
+          ),
         );
+      }
+
+      if (decision.kind === 'quarterEvent') {
+        const studentAction = option.meta?.studentAction;
+        if (studentAction === 'leave' && decision.context.studentId) {
+          const leavingId = decision.context.studentId;
+          const leavingName = teamMembers.find((student) => student.id === leavingId)?.name ?? '该学生';
+          removeStudentFromAllAssignments(leavingId);
+          pushEvent('团队变动', `${leavingName} 已离开团队（离队事件）。`);
+          pushChip('团队成员 -1', 'negative');
+        }
+      }
+
+      if (decision.kind === 'grantReviewEvent') {
+        const scoreDelta = typeof option.meta?.scoreDelta === 'number' ? option.meta.scoreDelta : 0;
+        const luckDelta = typeof option.meta?.luckDelta === 'number' ? option.meta.luckDelta : 0;
+        if (scoreDelta || luckDelta) {
+          setGrantApplications((prev) =>
+            prev.map((grant) =>
+              grant.id === decision.context.grantId
+                ? { ...grant, scoreDelta: grant.scoreDelta + scoreDelta, luck: grant.luck + luckDelta }
+                : grant,
+            ),
+          );
+        }
+      }
+
+      if (decision.kind === 'grantExecutionEvent') {
+        const progressDelta = typeof option.meta?.progressDelta === 'number' ? option.meta.progressDelta : 0;
+        if (progressDelta) {
+          setGrantApplications((prev) =>
+            prev.map((grant) =>
+              grant.id === decision.context.grantId
+                ? { ...grant, paperProgress: clampValue(grant.paperProgress + progressDelta, 0, 250) }
+                : grant,
+            ),
+          );
+        }
       }
 
       if (decision.kind === 'projectVenue') {
@@ -1578,10 +3153,10 @@ function App() {
                 : paper,
             ),
           );
-          if (studentTargetId) {
+          if (paperLeadStudentId) {
             setTeamMembers((prev) =>
               prev.map((student) =>
-                student.id === studentTargetId
+                student.id === paperLeadStudentId
                   ? applyStudentDelta(student, { pendingPapers: 1, mentalState: -2, stress: 3 })
                   : student,
               ),
@@ -1625,10 +3200,10 @@ function App() {
           }),
         );
 
-        if (action === 'withdraw' && studentTargetId) {
+        if (action === 'withdraw' && paperLeadStudentId) {
           setTeamMembers((prev) =>
             prev.map((student) =>
-              student.id === studentTargetId
+              student.id === paperLeadStudentId
                 ? applyStudentDelta(student, { pendingPapers: -1, mentalState: -2, stress: 2 })
                 : student,
             ),
@@ -1639,45 +3214,119 @@ function App() {
       const remaining = pendingDecisions.filter((item) => item.id !== decision.id);
       setPendingDecisions(remaining);
       setActiveDecisionId(remaining[0]?.id ?? null);
+      setActiveDecisionResult({
+        title: '事件结局',
+        headline: decision.title,
+        detail: option.outcome,
+        chips: resultChips,
+      });
     },
-    [pendingDecisions, projectPapers, pushEvent, stats.year, stats.quarter],
+    [
+      pendingDecisions,
+      projectPapers,
+      grantApplications,
+      pushEvent,
+      stats.year,
+      stats.quarter,
+      teamMembers,
+      removeStudentFromAllAssignments,
+    ],
   );
 
   const getGrantState = (type: GrantType) =>
-    grantApplications.find((item) => item.type === type && item.appliedYear === stats.year);
+    grantApplications.find((grant) => grant.type === type && (grant.status === 'reviewing' || grant.status === 'active')) ??
+    grantApplications.find((grant) => grant.type === type) ??
+    null;
 
   const handleApplyGrant = (type: GrantType) => {
-    const rule = grantRules.find((item) => item.type === type);
-    if (!rule) return;
-    if (stats.quarter !== rule.openQuarter) {
-      setTeamMessage(`${type} 仅在第 ${rule.openQuarter} 季度开放申请。`);
+    const config = getGrantConfig(type);
+    if (!config) return;
+    if (stats.quarter !== config.openQuarter) {
+      setTeamMessage(`${type} 仅在第 ${config.openQuarter} 季度开放申报。`);
       return;
     }
-    if (stats.funding < rule.cost) {
-      setTeamMessage('经费不足，无法提交课题申请。');
+
+    const hasActive = grantApplications.some(
+      (grant) => grant.type === type && (grant.status === 'reviewing' || grant.status === 'active'),
+    );
+    if (hasActive) {
+      setTeamMessage(`${type} 已有进行中的课题申请/执行中。`);
       return;
     }
-    if (getGrantState(type)) {
-      setTeamMessage(`${type} 本年度已申请过。`);
+
+    const hasAppliedThisYear = grantApplications.some((grant) => grant.type === type && grant.appliedYear === stats.year);
+    if (hasAppliedThisYear) {
+      setTeamMessage(`${type} 本年度已申报过。`);
       return;
     }
-    const base = type === '国自然' ? 0.35 : 0.3;
-    const academiaBoost = stats.academia.value / 200;
-    const adminBoost = stats.admin.value / 250;
-    const chance = Math.min(0.85, Math.max(0.15, base + academiaBoost + adminBoost));
-    const success = Math.random() < chance;
-    const status: GrantState['status'] = success ? 'approved' : 'rejected';
-    setStats((prev) => ({
-      ...prev,
-      funding: prev.funding - rule.cost + (success ? rule.reward : 0),
-      reputation: prev.reputation + (success ? 2 : 0),
-    }));
-    setGrantApplications((prev) => [...prev, { type, appliedYear: stats.year, status }]);
-    const detail = success
-      ? `${type} 申请通过，获得经费 ${Math.round(rule.reward / 10000)} 万。`
-      : `${type} 申请未通过，需要完善材料再战。`;
+
+    const id = `grant-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const reviewEnd = addQuarters({ year: stats.year, quarter: stats.quarter }, config.reviewOffsetQuarters);
+    const nextGrant: GrantState = {
+      id,
+      type,
+      title: pickGrantTitle(type, researchFocus),
+      appliedYear: stats.year,
+      appliedQuarter: stats.quarter,
+      reviewEndYear: reviewEnd.year,
+      reviewEndQuarter: reviewEnd.quarter,
+      status: 'reviewing',
+      baseScore: calcGrantBaseScore(stats, type),
+      scoreDelta: 0,
+      luck: rollInRange(-6, 6),
+      assignedStudentIds: [],
+      paperProgress: 0,
+      paperIds: [],
+      lastReviewEventYear: stats.year,
+      lastReviewEventQuarter: stats.quarter,
+    };
+
+    setGrantApplications((prev) => [nextGrant, ...prev]);
+    const detail = `已提交 ${type} 申报（无申报费）。预计于第 ${reviewEnd.year} 年 Q${reviewEnd.quarter} 出结果。`;
     setTeamMessage(detail);
-    pushEvent('课题申请', detail);
+    pushEvent('课题申报', detail);
+
+    const teamSummary = teamMembers.slice(0, 10).map((student) => ({
+      id: student.id,
+      name: student.name,
+      stage: formatStudentStage(student),
+      traits: student.traits,
+      diligence: student.diligence,
+      talent: student.talent,
+      luck: student.luck,
+      pendingPapers: student.pendingPapers,
+      totalPapers: student.totalPapers,
+    }));
+
+    void requestGrantReviewDecision({
+      grant: nextGrant,
+      year: stats.year,
+      quarter: stats.quarter,
+      mode: 'submission',
+      mentor: {
+        name,
+        discipline: selectedDiscipline,
+        department: selectedDepartment,
+        researchFocus,
+        biography: profileData?.biography ?? '',
+        achievements: profileData?.achievements ?? [],
+        recruitmentNeeds: profileData?.recruitmentNeeds ?? [],
+      },
+      stats: {
+        year: stats.year,
+        quarter: stats.quarter,
+        morale: stats.morale.value,
+        academia: stats.academia.value,
+        admin: stats.admin.value,
+        integrity: stats.integrity.value,
+        funding: stats.funding,
+        reputation: stats.reputation,
+      },
+      team: { members: teamSummary },
+    }).then((decision) => {
+      setPendingDecisions((prev) => [...prev, decision]);
+      setActiveDecisionId((prev) => prev ?? decision.id);
+    });
   };
 
   const requestProjectTitle = async () => {
@@ -1895,6 +3544,31 @@ function App() {
     );
   };
 
+  const handleAssignStudentToGrant = (grantId: string, studentId: string) => {
+    setGrantApplications((prev) =>
+      prev.map((grant) => {
+        if (grant.id !== grantId) return grant;
+        if (grant.status !== 'reviewing' && grant.status !== 'active') return grant;
+        if (grant.assignedStudentIds.includes(studentId)) return grant;
+        return { ...grant, assignedStudentIds: [...grant.assignedStudentIds, studentId] };
+      }),
+    );
+    const studentName = teamMembers.find((student) => student.id === studentId)?.name ?? '';
+    const grantTitle = grantApplications.find((grant) => grant.id === grantId)?.title ?? '';
+    if (studentName && grantTitle) {
+      pushEvent('课题分配', `${studentName} 加入「${grantTitle}」。`);
+    }
+  };
+
+  const handleRemoveStudentFromGrant = (grantId: string, studentId: string) => {
+    setGrantApplications((prev) =>
+      prev.map((grant) => {
+        if (grant.id !== grantId) return grant;
+        return { ...grant, assignedStudentIds: grant.assignedStudentIds.filter((id) => id !== studentId) };
+      }),
+    );
+  };
+
   const advanceProjects = useCallback(
     (source: ResearchProject[], students: StudentPersona[]) => {
       const studentMap = new Map(students.map((student) => [student.id, student]));
@@ -1952,44 +3626,24 @@ function App() {
 
   const applyFirstYearRules = useCallback(
     (students: StudentPersona[]): StudentPersona[] => {
-      const enforceMasterYearOne = stats.year < 6;
-      const isFirstYear = stats.year === 1;
-      const isFirstQuarter = isFirstYear && stats.quarter === 1;
       const normalized = students.map((student) => {
-        let adjusted: StudentPersona = student;
-        if (enforceMasterYearOne) {
-          adjusted = {
-            ...student,
-            studentType: 'MASTER',
-            year: 1,
-            pendingPapers: 0,
-            totalPapers: 0,
-            contribution: 0,
-            isYoungTeacher: false,
-            stress: Math.min(student.stress, 20),
-            mentalState: 100,
-          };
-        } else if (isFirstYear) {
-          adjusted = {
-            ...student,
-            studentType: isFirstQuarter
-              ? 'MASTER'
-              : student.studentType === 'YOUNG_TEACHER'
-                ? 'MASTER'
-                : student.studentType,
-            year: 1,
-            pendingPapers: 0,
-            totalPapers: 0,
-            contribution: 0,
-            stress: Math.min(student.stress, 20),
-            mentalState: 100,
-          };
-        }
+        const adjusted: StudentPersona = {
+          ...student,
+          studentType: 'MASTER',
+          year: 1,
+          recruitedYear: stats.year,
+          pendingPapers: 0,
+          totalPapers: 0,
+          contribution: 0,
+          isYoungTeacher: false,
+          stress: Math.min(student.stress, 20),
+          mentalState: 100,
+        };
         return normalizeStudentTraits(adjusted);
       });
       return normalized.map((student) => ({ ...student, isBeingMentored: false, mentorId: undefined }));
     },
-    [stats.year, stats.quarter],
+    [stats.year],
   );
   const loadTeamSnapshot = useCallback(async () => {
     if (stage !== 'briefing') return;
@@ -2011,12 +3665,92 @@ function App() {
     }
   }, [stage, applyFirstYearRules]);
 
-  const fetchTeamMembers = useCallback(
-    async (desiredCount = TEAM_DEFAULT_COUNT, mode: 'initial' | 'recruit' = 'initial') => {
-      if (stage !== 'briefing') return;
-      setTeamLoading(true);
-      setTeamError(null);
-      setTeamMessage(null);
+  const requestRecruitNoShowReason = useCallback(async () => {
+    const teamSummary = teamMembers.slice(0, 8).map((student) => {
+      const traitStack = getTraitStack(student.traits);
+      return {
+        name: student.name,
+        stage: formatStudentStage(student),
+        mainTrait: traitStack.mainTrait?.name ?? '',
+        subTraits: traitStack.subTraits.map((trait) => trait.name),
+        talent: student.talent,
+        diligence: student.diligence,
+        stress: student.stress,
+        mentalState: student.mentalState,
+        pendingPapers: student.pendingPapers,
+        totalPapers: student.totalPapers,
+      };
+    });
+
+    const res = await fetch(`${API_BASE_URL}/api/events/recruit-no-show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mentor: {
+          name,
+          discipline: selectedDiscipline,
+          department: selectedDepartment,
+          researchFocus,
+          biography: profileData?.biography ?? '',
+          achievements: profileData?.achievements ?? [],
+          recruitmentNeeds: profileData?.recruitmentNeeds ?? [],
+        },
+        stats: {
+          year: stats.year,
+          quarter: stats.quarter,
+          morale: stats.morale.value,
+          academia: stats.academia.value,
+          admin: stats.admin.value,
+          integrity: stats.integrity.value,
+          funding: stats.funding,
+          reputation: stats.reputation,
+        },
+        team: { members: teamSummary },
+      }),
+    });
+    if (!res.ok) throw new Error('Recruit no-show response not ok');
+    const data = (await res.json()) as { reason?: unknown };
+    const reason = String(data?.reason ?? '').trim();
+    if (!reason) throw new Error('Recruit no-show payload missing reason');
+    return reason;
+  }, [
+    name,
+    selectedDepartment,
+    selectedDiscipline,
+    researchFocus,
+    profileData,
+    stats.year,
+    stats.quarter,
+    stats.morale.value,
+    stats.academia.value,
+    stats.admin.value,
+    stats.integrity.value,
+    stats.funding,
+    stats.reputation,
+    teamMembers,
+  ]);
+
+  const runRecruitInterview = useCallback(
+    async (candidateId: string) => {
+      const removeCandidate = () => setRecruitInterviewing((prev) => prev.filter((item) => item.id !== candidateId));
+
+      const noShow = Math.random() < 0.15;
+      if (noShow) {
+        try {
+          const reason = await requestRecruitNoShowReason();
+          pushEvent('招募失败', `候选人爽约：${reason}`);
+          pushNotice('候选人爽约', reason);
+        } catch (error) {
+          console.warn('Recruit no-show reason generation failed, fallback.', error);
+          const fallbackReason = '候选人临时收到更合适的机会，最终没有按时到场。';
+          pushEvent('招募失败', `候选人爽约：${fallbackReason}`);
+          pushNotice('候选人爽约', fallbackReason);
+        } finally {
+          removeCandidate();
+        }
+        return;
+      }
+
       try {
         const res = await fetch(`${API_BASE_URL}/api/students`, {
           method: 'POST',
@@ -2025,45 +3759,48 @@ function App() {
             mentor: name,
             department: selectedDepartment,
             researchFocus,
-            count: desiredCount,
+            count: 1,
+            mode: 'recruit',
             year: stats.year,
             quarter: stats.quarter,
-            mode,
           }),
         });
         if (!res.ok) throw new Error('Failed to load students');
         const raw: StudentPersona[] = await res.json();
         const data = applyFirstYearRules(raw);
-        if (mode === 'recruit' && data.length) {
+
+        if (data.length) {
           const newlyPassed = data.map((student) => {
             const traits = getTraitStack(student.traits);
             const mainLabel = traits.mainTrait?.name ?? '待定';
             return `面试通过！${student.name} 正式加入。成分: ${mainLabel}`;
           });
           newlyPassed.forEach((detail) => pushEvent('面试通过', detail));
-        }
-        if (mode === 'recruit') {
+          const names = data.map((student) => student.name).join('、');
+          pushEvent('招募完成', `已发起面试：${names}`);
           setTeamMembers((prev) => [...prev, ...data]);
-          const added = data.length;
-          const message = added > 0 ? `成功招募 ${added} 名学术成员。` : '团队阵容已刷新。';
-          setTeamMessage(message);
-          pushEvent('团队扩充', message);
-          if (data.length) {
-            const names = data.map((student) => student.name).join('、');
-            pushEvent('招募完成', `已发起面试：${names}`);
-          }
+          setTeamBootstrapped(true);
         } else {
-          setTeamMembers(data);
+          pushEvent('招募异常', '本次招募没有生成候选人。');
         }
-        setTeamBootstrapped(true);
       } catch (error) {
-        console.error('Student fetch failed', error);
-        setTeamError('无法加载研究团队，请稍后再试。');
+        console.error('Recruit interview failed', error);
+        pushNotice('招募失败', '无法加载候选人信息，请稍后再试。');
       } finally {
-        setTeamLoading(false);
+        removeCandidate();
       }
     },
-    [stage, name, selectedDepartment, researchFocus, stats.year, stats.quarter, applyFirstYearRules, pushEvent],
+    [
+      requestRecruitNoShowReason,
+      pushEvent,
+      pushNotice,
+      applyFirstYearRules,
+      name,
+      selectedDepartment,
+      researchFocus,
+      stats.year,
+      stats.quarter,
+    ],
   );
 
   const handleRecruit = async () => {
@@ -2072,7 +3809,14 @@ function App() {
       return;
     }
     setSelectedMentorId(null);
-    await fetchTeamMembers(1, 'recruit');
+    if (recruitInterviewing.length >= 3) {
+      setTeamMessage('同时最多面试 3 名候选人，请等待面试结束。');
+      return;
+    }
+
+    const candidateId = `candidate-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setRecruitInterviewing((prev) => [...prev, { id: candidateId }]);
+    void runRecruitInterview(candidateId);
   };
 
   const composeProfile = async () => {
@@ -2116,7 +3860,12 @@ function App() {
     }
   };
 
-  const handleEndQuarter = () => {
+  const handleEndQuarter = async () => {
+    if (isQuarterSettling) return;
+    setIsQuarterSettling(true);
+    setQuarterSettlementDetail('正在结算季度数据…');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
     const nextStats = applyQuarterEffects(stats);
     const teamSnapshot = teamMembers.length
       ? applyMentorshipInfluence(teamMembers).map((student) => ({
@@ -2147,6 +3896,16 @@ function App() {
     });
     projectPaperSettlement.events.forEach((event) => pushEvent(event.title, event.detail));
 
+    const grantSettlement = settleGrants({
+      grants: grantApplications,
+      students: projectPaperSettlement.updatedStudents,
+      mentorStats: stats,
+      projectPapers: projectPaperSettlement.updatedPapers,
+      currentStamp: { year: stats.year, quarter: stats.quarter },
+      decisionStamp: { year: nextStats.year, quarter: nextStats.quarter },
+    });
+    grantSettlement.events.forEach((event) => pushEvent(event.title, event.detail));
+
     const newProjectPapers: ProjectPaper[] = completedProjects.map((project) => {
       const id = `pp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       return {
@@ -2175,22 +3934,43 @@ function App() {
       );
     }
 
-    setProjectPapers([...newProjectPapers, ...projectPaperSettlement.updatedPapers]);
-    setTeamMembers(projectPaperSettlement.updatedStudents);
+    const entersAcademicYear = stats.quarter === 2 && nextStats.quarter === 3;
+    const nextTeamMembers = entersAcademicYear
+      ? projectPaperSettlement.updatedStudents.map((student) => {
+          if (student.studentType === 'YOUNG_TEACHER') return student;
+          return { ...student, year: clampValue((student.year ?? 1) + 1, 1, 6) };
+        })
+      : projectPaperSettlement.updatedStudents;
+
+    if (entersAcademicYear) {
+      pushEvent('学年推进', '新学年开始，学生年级已提升（研一→研二，研二→研三）。');
+    }
+
+    setProjectPapers([...grantSettlement.newPapers, ...newProjectPapers, ...projectPaperSettlement.updatedPapers]);
+    setTeamMembers(nextTeamMembers);
     setProjects(updated);
+    setGrantApplications(grantSettlement.updatedGrants);
 
     const combinedQuarterDelta: StatDelta = {
-      ...projectPaperSettlement.statDelta,
-      funding: (projectPaperSettlement.statDelta.funding ?? 0) + paperSettlement.fundingDelta,
+      morale: (projectPaperSettlement.statDelta.morale ?? 0) + (grantSettlement.statDelta.morale ?? 0),
+      academia: (projectPaperSettlement.statDelta.academia ?? 0) + (grantSettlement.statDelta.academia ?? 0),
+      admin: (projectPaperSettlement.statDelta.admin ?? 0) + (grantSettlement.statDelta.admin ?? 0),
+      integrity: (projectPaperSettlement.statDelta.integrity ?? 0) + (grantSettlement.statDelta.integrity ?? 0),
+      funding:
+        (projectPaperSettlement.statDelta.funding ?? 0) +
+        paperSettlement.fundingDelta +
+        (grantSettlement.statDelta.funding ?? 0),
       reputation:
         (projectPaperSettlement.statDelta.reputation ?? 0) +
         completedTitles.length +
-        paperSettlement.reputationDelta,
+        paperSettlement.reputationDelta +
+        (grantSettlement.statDelta.reputation ?? 0),
     };
 
-    setStats(applyMentorDelta(nextStats, combinedQuarterDelta));
+    const nextMentorStats = applyMentorDelta(nextStats, combinedQuarterDelta);
+    setStats(nextMentorStats);
 
-    const decisionsToAdd = [...newProjectDecisions, ...projectPaperSettlement.decisions];
+    const decisionsToAdd = [...newProjectDecisions, ...projectPaperSettlement.decisions, ...grantSettlement.decisions];
     if (decisionsToAdd.length) {
       setPendingDecisions((prev) => {
         const existingIds = new Set(prev.map((item) => item.id));
@@ -2203,12 +3983,148 @@ function App() {
     }
 
     const decisionStudent = paperSettlement.decisionStudentId
-      ? projectPaperSettlement.updatedStudents.find((student) => student.id === paperSettlement.decisionStudentId) ?? null
+      ? nextTeamMembers.find((student) => student.id === paperSettlement.decisionStudentId) ?? null
       : null;
+    const decisionPromises: Array<Promise<unknown>> = [];
     if (decisionStudent) {
-      void queueStudentPaperDecision(decisionStudent, { year: nextStats.year, quarter: nextStats.quarter }, stats);
+      decisionPromises.push(
+        queueStudentPaperDecision(decisionStudent, { year: nextStats.year, quarter: nextStats.quarter }, stats),
+      );
     }
+
+    setQuarterSettlementDetail('正在生成校务通知与申报事件…');
+    const teamSummary = nextTeamMembers.slice(0, 10).map((student) => ({
+      id: student.id,
+      name: student.name,
+      stage: formatStudentStage(student),
+      traits: student.traits,
+      diligence: student.diligence,
+      talent: student.talent,
+      luck: student.luck,
+      pendingPapers: student.pendingPapers,
+      totalPapers: student.totalPapers,
+    }));
+
+    if (grantSettlement.decisionRequests.length) {
+      decisionPromises.push(
+        Promise.all(
+          grantSettlement.decisionRequests.map((request) => {
+            if (request.kind === 'grantReviewEvent') {
+              return requestGrantReviewDecision({
+                grant: request.grant,
+                year: request.year,
+                quarter: request.quarter,
+                mode: request.mode,
+                mentor: {
+                  name,
+                  discipline: selectedDiscipline,
+                  department: selectedDepartment,
+                  researchFocus,
+                  biography: profileData?.biography ?? '',
+                  achievements: profileData?.achievements ?? [],
+                  recruitmentNeeds: profileData?.recruitmentNeeds ?? [],
+                },
+                stats: {
+                  year: request.year,
+                  quarter: request.quarter,
+                  morale: nextMentorStats.morale.value,
+                  academia: nextMentorStats.academia.value,
+                  admin: nextMentorStats.admin.value,
+                  integrity: nextMentorStats.integrity.value,
+                  funding: nextMentorStats.funding,
+                  reputation: nextMentorStats.reputation,
+                },
+                team: { members: teamSummary },
+              });
+            }
+
+            return requestGrantExecutionDecision({
+              grant: request.grant,
+              year: request.year,
+              quarter: request.quarter,
+              mentor: {
+                name,
+                discipline: selectedDiscipline,
+                department: selectedDepartment,
+                researchFocus,
+                biography: profileData?.biography ?? '',
+                achievements: profileData?.achievements ?? [],
+                recruitmentNeeds: profileData?.recruitmentNeeds ?? [],
+              },
+              stats: {
+                year: request.year,
+                quarter: request.quarter,
+                morale: nextMentorStats.morale.value,
+                academia: nextMentorStats.academia.value,
+                admin: nextMentorStats.admin.value,
+                integrity: nextMentorStats.integrity.value,
+                funding: nextMentorStats.funding,
+                reputation: nextMentorStats.reputation,
+              },
+              team: { members: teamSummary },
+            });
+          }),
+        ).then((grantDecisions) => {
+          if (!grantDecisions.length) return;
+          setPendingDecisions((prev) => {
+            const existingIds = new Set(prev.map((item) => item.id));
+            const uniqueAdds = grantDecisions.filter((item) => !existingIds.has(item.id));
+            return uniqueAdds.length ? [...prev, ...uniqueAdds] : prev;
+          });
+          setActiveDecisionId((prev) => prev ?? grantDecisions[0].id);
+          pushEvent('申报课题事件', `本季度生成 ${grantDecisions.length} 条申报/执行事件，等待处理。`);
+        }),
+      );
+    }
+
+    decisionPromises.push(
+      requestQuarterlyEvents({
+        year: nextMentorStats.year,
+        quarter: nextMentorStats.quarter,
+        count: 3,
+        mentor: {
+          name,
+          discipline: selectedDiscipline,
+          department: selectedDepartment,
+          researchFocus,
+          biography: profileData?.biography ?? '',
+          achievements: profileData?.achievements ?? [],
+          recruitmentNeeds: profileData?.recruitmentNeeds ?? [],
+        },
+        stats: {
+          year: nextMentorStats.year,
+          quarter: nextMentorStats.quarter,
+          morale: nextMentorStats.morale.value,
+          academia: nextMentorStats.academia.value,
+          admin: nextMentorStats.admin.value,
+          integrity: nextMentorStats.integrity.value,
+          funding: nextMentorStats.funding,
+          reputation: nextMentorStats.reputation,
+        },
+        team: { members: teamSummary },
+      }).then((decisions) => {
+        if (!decisions.length) return;
+        setPendingDecisions((prev) => {
+          const existingIds = new Set(prev.map((item) => item.id));
+          const uniqueAdds = decisions.filter((item) => !existingIds.has(item.id));
+          return uniqueAdds.length ? [...prev, ...uniqueAdds] : prev;
+        });
+        setActiveDecisionId((prev) => prev ?? decisions[0].id);
+        pushEvent('校务通知', `本季度生成 ${decisions.length} 条校务/团队事件，等待处理。`);
+      }),
+    );
+
     pushEvent('季度结算', `已结束第 ${stats.year} 年第 ${stats.quarter} 季度。`);
+
+      await Promise.all(decisionPromises);
+      setQuarterSettlementDetail('结算完成');
+    } catch (error) {
+      console.error('Quarter settlement failed', error);
+      pushEvent('季度结算失败', '本季度结算出现异常，请稍后重试或查看控制台日志。');
+      setQuarterSettlementDetail('结算失败');
+    } finally {
+      setIsQuarterSettling(false);
+    }
   };
 
   const handleResetProgress = async () => {
@@ -2241,6 +4157,8 @@ function App() {
     setPendingDecisions([]);
     setActiveDecisionId(null);
     setTeamMessage(null);
+    setNoticeQueue([]);
+    setRecruitInterviewing([]);
     setTeamError(null);
     setTeamBootstrapped(false);
     setEventLog([]);
@@ -2817,30 +4735,35 @@ function App() {
                   </div>
                   <span className="badge stage">第{stats.year}年</span>
                 </div>
-                <p>{briefBio}</p>
+                <p className="profile-bio-text">{briefBio}</p>
                 {profileError && <p className="error-text">{profileError}</p>}
               </section>
-              <section className="info-card">
-                <h3>阶段成果</h3>
-                <ul className="text-list">
-                  {achievements.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              </section>
-              <section className="info-card list-card">
-                <h3>招募需求</h3>
-                <ul className="text-list">
-                  {recruitmentNeeds.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
+              <section className="info-card home-summary-card">
+                <h3>成果与招募</h3>
+                <div className="home-summary-grid">
+                  <div className="home-summary-block">
+                    <p className="home-summary-title">阶段成果</p>
+                    <ul className="text-list">
+                      {achievements.slice(0, 3).map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="home-summary-block">
+                    <p className="home-summary-title">招募需求</p>
+                    <ul className="text-list">
+                      {recruitmentNeeds.slice(0, 3).map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
               </section>
               <section className="info-card achievement-card">
                 <h3>主要成就</h3>
                 <p className="achievement-text">{achievements.join('；')}</p>
               </section>
-              <section className="info-card quote-wide motivation-card">
+              <section className="info-card quote-wide motivation-card">        
                 <p className="quote-text">{motivationText}</p>
               </section>
             </div>
@@ -2862,9 +4785,9 @@ function App() {
                       className="primary"
                       type="button"
                       onClick={handleRecruit}
-                      disabled={!canRecruitThisQuarter || teamLoading}
+                      disabled={!canRecruitThisQuarter || teamLoading || recruitInterviewing.length >= 3}
                     >
-                      招募学术
+                      招募学术{recruitInterviewing.length ? `（面试中 ${recruitInterviewing.length}/3）` : ''}
                     </button>
                     <button
                       className="ghost"
@@ -2878,8 +4801,15 @@ function App() {
                 </div>
                 {teamMessage && <p className="success-text">{teamMessage}</p>}
                 {teamError && <p className="error-text">{teamError}</p>}
-              {(teamLoading || (!teamLoading && teamMembers.length > 0)) && (
-                <div className="team-grid">
+              {(teamLoading || teamMembers.length > 0 || recruitInterviewing.length > 0) && (
+                <div
+                  className="team-grid"
+                  ref={teamGridRef}
+                  style={teamGridMaxHeight ? { maxHeight: teamGridMaxHeight } : undefined}
+                >
+                  {recruitInterviewing.map((candidate) => (
+                    <InterviewingStudentCard key={candidate.id} />
+                  ))}
                   {teamMembers.map((student) => {
                     const traitStack = getTraitStack(student.traits);
                     const mentoringTarget = teamMembers.find((member) => member.mentorId === student.id);
@@ -2927,8 +4857,8 @@ function App() {
                         <div className="student-title-row">
                           <h4>{student.name}</h4>
                           <div className="student-meta">
-                            <span>在投 {student.pendingPapers}</span>
-                            <span>发表 {student.totalPapers}</span>
+                            <span>在投 {normalizePaperCount(student.pendingPapers)}</span>
+                            <span>发表 {normalizePaperCount(student.totalPapers)}</span>
                           </div>
                         </div>
                         <div className="student-sub-row">
@@ -3131,7 +5061,7 @@ function App() {
                   )}
                 </div>
               )}
-                {!teamLoading && !teamMembers.length && (
+                {!teamLoading && !teamMembers.length && recruitInterviewing.length === 0 && (
                   <p className="hint-text">暂无成员，点击“招募学术”生成第一批学生。</p>
                 )}
               </section>
@@ -3153,29 +5083,124 @@ function App() {
                   <div className="research-card grant-card">
                     <h4>国自然 / 国社科</h4>
                     <div className="grant-list">
-                      {grantRules.map((rule) => {
-                        const state = getGrantState(rule.type);
-                        const isOpen = stats.quarter === rule.openQuarter;
+                      {grantConfigs.map((config) => {
+                        const state = getGrantState(config.type);
+                        const isOpen = stats.quarter === config.openQuarter;
+                        const hasActive = grantApplications.some(
+                          (grant) => grant.type === config.type && (grant.status === 'reviewing' || grant.status === 'active'),
+                        );
+                        const hasAppliedThisYear = grantApplications.some(
+                          (grant) => grant.type === config.type && grant.appliedYear === stats.year,
+                        );
+                        const canApply = isOpen && !hasActive && !hasAppliedThisYear;
+                        const statusLabel =
+                          state?.status === 'reviewing'
+                            ? '评审中'
+                            : state?.status === 'active'
+                              ? '执行中'
+                              : state?.status === 'completed'
+                                ? '已结题'
+                                : state?.status === 'failed'
+                                  ? '结题未通过'
+                                  : state?.status === 'rejected'
+                                    ? '未获批'
+                                    : '未申报';
+                        const papers = state ? projectPapers.filter((paper) => paper.grantId === state.id) : [];
+                        const submissions = papers.filter((paper) => paper.status !== 'awaitingVenue').length;
+                        const accepted = papers.filter((paper) => paper.status === 'accepted').length;
+                        const requirement = state?.tier ? config.tiers[state.tier].requirement : null;
+                        const assigned = state
+                          ? state.assignedStudentIds
+                              .map((id) => teamMembers.find((student) => student.id === id))
+                              .filter(Boolean)
+                          : [];
+                        const availableStudents =
+                          state ? teamMembers.filter((student) => !state.assignedStudentIds.includes(student.id)) : [];
+                        const canEditMembers = state?.status === 'reviewing' || state?.status === 'active';
+
                         return (
-                          <div key={rule.type} className="grant-item">
+                          <div key={config.type} className="grant-item">
                             <div>
-                              <strong>{rule.type}</strong>
+                              <strong title={state?.title || config.type}>{config.type}</strong>
                               <p className="muted-text">
-                                开放季度：Q{rule.openQuarter} · 申报费 ￥{rule.cost.toLocaleString()} · 经费奖励 {Math.round(rule.reward / 10000)} 万
+                                申报：Q{config.openQuarter} · 评审：Q{config.openQuarter}→Q{config.openQuarter + config.reviewOffsetQuarters} · 资助档位：A {Math.round(config.tiers.A.funding / 10000)}万 / B {Math.round(config.tiers.B.funding / 10000)}万 / C {Math.round(config.tiers.C.funding / 10000)}万
                               </p>
                               {state && (
                                 <p className="muted-text">
-                                  当前状态：{state.status === 'approved' ? '已通过' : state.status === 'rejected' ? '未通过' : '待评审'}
+                                  标题：{state.title} · 状态：{statusLabel}
+                                  {state.status === 'reviewing'
+                                    ? `（预计 ${state.reviewEndYear}年Q${state.reviewEndQuarter} 出结果）`
+                                    : state.status === 'active' && state.tier
+                                      ? `（档位 ${state.tier} · 结题 ${state.closureDueYear}年Q${state.closureDueQuarter}）`
+                                      : ''}
                                 </p>
+                              )}
+                              {state?.status === 'active' && (
+                                <p className="muted-text">
+                                  写作进度：{Math.round(state.paperProgress)}% · 论文：生成 {papers.length} / 提交 {submissions} / 录用 {accepted}
+                                  {requirement
+                                    ? ` · 结题要求：提交≥${requirement.requiredSubmissions}、录用≥${requirement.requiredAccepted}${
+                                        requirement.requiredTopTierAtLeast ? `（含1篇${requirement.requiredTopTierAtLeast}+）` : ''
+                                      }`
+                                    : ''}
+                                </p>
+                              )}
+                              {canEditMembers && state && (
+                                <div className="project-team">
+                                  <div className="project-team-row">
+                                    <div className="project-team-list">
+                                      {assigned.length ? (
+                                        (assigned as StudentPersona[]).map((member) => (
+                                          <button
+                                            key={member.id}
+                                            className="project-member"
+                                            type="button"
+                                            title="点击移除"
+                                            onClick={() => handleRemoveStudentFromGrant(state.id, member.id)}
+                                          >
+                                            <span className="project-member-avatar">{member.name.slice(0, 1)}</span>
+                                            <span className="project-member-name">{member.name}</span>
+                                            <span className="project-member-remove" aria-hidden="true">
+                                              ×
+                                            </span>
+                                          </button>
+                                        ))
+                                      ) : (
+                                        <span className="muted-text">尚未分配学生。</span>
+                                      )}
+                                    </div>
+                                    <div className="project-assign">
+                                      <select
+                                        className="text-input"
+                                        value=""
+                                        disabled={!canEditMembers || availableStudents.length === 0}
+                                        onChange={(event) => {
+                                          const value = event.target.value;
+                                          if (!value) return;
+                                          handleAssignStudentToGrant(state.id, value);
+                                        }}
+                                      >
+                                        <option value="">
+                                          {availableStudents.length ? '添加学生' : '暂无可添加成员'}
+                                        </option>
+                                        {availableStudents.map((student) => (
+                                          <option key={student.id} value={student.id}>
+                                            {student.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </div>
+                                </div>
                               )}
                             </div>
                             <button
                               className="ghost"
                               type="button"
-                              onClick={() => handleApplyGrant(rule.type)}
-                              disabled={!isOpen || Boolean(state)}
+                              onClick={() => handleApplyGrant(config.type)}
+                              disabled={!canApply}
                             >
-                              {state ? '已申请' : isOpen ? '提交申请' : '未开放'}
+                              {canApply ? '提交申报' : hasActive ? '进行中' : hasAppliedThisYear ? '本年度已申报' : '未开放'}
                             </button>
                           </div>
                         );
@@ -3403,8 +5428,13 @@ function App() {
               <li>整理申请材料</li>
             </ul>
           </div>
-          <button className="end-quarter stick-bottom" type="button" onClick={handleEndQuarter}>
-            结束本季度
+          <button
+            className="end-quarter stick-bottom"
+            type="button"
+            onClick={handleEndQuarter}
+            disabled={isQuarterSettling}
+          >
+            {isQuarterSettling ? '结算中…' : '结束本季度'}
           </button>
         </aside>
       </div>
@@ -3414,13 +5444,19 @@ function App() {
   return (
     <>
       {stage === 'application' ? applicationView : dashboardView}
-      {stage === 'briefing' && activeDecision && (
+      {stage === 'briefing' && activeDecision && !activeDecisionResult && (
         <DecisionModal
           decision={activeDecision}
           queueCount={pendingDecisions.length}
           onClose={() => setActiveDecisionId(null)}
           onChoose={(optionId) => handleDecisionChoose(activeDecision, optionId)}
         />
+      )}
+      {stage === 'briefing' && activeDecisionResult && (
+        <DecisionResultModal result={activeDecisionResult} onClose={() => setActiveDecisionResult(null)} />
+      )}
+      {stage === 'briefing' && activeNotice && (
+        <NoticeModal title={activeNotice.title} detail={activeNotice.detail} onClose={closeActiveNotice} />
       )}
       {profileLoading && stage === 'application' && (
         <div className="loading-overlay">
@@ -3439,6 +5475,9 @@ function App() {
         />
       )}
       {showOnboarding && <OnboardingModal onClose={() => setShowOnboarding(false)} />}
+      {isQuarterSettling && (
+        <QuarterSettlementModal title="季度结算中" detail={quarterSettlementDetail} />
+      )}
     </>
   );
 }

@@ -5,6 +5,9 @@ import { generateProfileFromLLM } from './services/profileGenerator.js'
 import { generateStudentPersonas } from './services/studentGenerator.js'
 import { generateProjectTitle } from './services/projectTitleGenerator.js'
 import { generateStudentPaperEvent } from './services/studentPaperEventGenerator.js'
+import { generateRecruitNoShowReason } from './services/recruitNoShowReasonGenerator.js'
+import { generateQuarterEvent } from './services/quarterEventGenerator.js'
+import { generateGrantEvent } from './services/grantEventGenerator.js'
 
 const app = express()
 const PORT = Number(process.env.API_PORT || process.env.PORT || 4000)
@@ -103,7 +106,10 @@ app.post('/api/profile/generate', async (req, res) => {
   const seed = {
     biographySeed: req.body?.biographySeed || currentProfile.biography,
     areas: req.body?.areas || currentProfile.researchAreas,
-    recruitment: req.body?.recruitmentNeeds || currentProfile.recruitmentNeeds,
+    recruitment:
+      req.body?.recruitmentNeeds ||
+      req.body?.recruitment ||
+      currentProfile.recruitmentNeeds,
     achievements: req.body?.achievements || currentProfile.achievements,
   }
 
@@ -183,6 +189,150 @@ app.post('/api/events/student-paper', async (req, res) => {
   } catch (error) {
     console.error('Student paper event generation failed', error)
     res.status(500).json({ error: '随机事件生成失败，请稍后再试。' })
+  }
+})
+
+app.post('/api/events/recruit-no-show', async (req, res) => {
+  const payload = {
+    mentor: req.body?.mentor,
+    stats: req.body?.stats,
+    team: req.body?.team,
+  }
+
+  try {
+    console.log('[API] POST /api/events/recruit-no-show', new Date().toISOString())
+    const reason = await generateRecruitNoShowReason(payload)
+    res.json({ reason })
+  } catch (error) {
+    console.error('Recruit no-show reason generation failed', error)
+    res.status(500).json({ error: '闅忔満浜嬩欢鐢熸垚澶辫触锛岃绋嶅悗鍐嶈瘯銆? ' })
+  }
+})
+
+app.post('/api/events/quarterly-batch', async (req, res) => {
+  const payload = {
+    mentor: req.body?.mentor,
+    stats: req.body?.stats,
+    team: req.body?.team,
+    year: req.body?.year,
+    quarter: req.body?.quarter,
+    count: req.body?.count,
+  }
+
+  const count = Math.max(1, Math.min(5, Number(payload.count) || 3))
+  const baseCategories = [
+    'schoolNotice',
+    'resource',
+    'research',
+    'industryOffer',
+    'conference',
+    'collaboration',
+    'policy',
+  ]
+  const members = Array.isArray(payload.team?.members) ? payload.team.members : []
+  const runawayChance = 0.05
+  const runawayIndex =
+    members.length && Math.random() < runawayChance ? Math.floor(Math.random() * count) : -1
+  const pickCategory = (index, used) => {
+    if (index === runawayIndex) return 'runaway'
+    const pool = baseCategories.filter((item) => !used.has(item))
+    const list = pool.length ? pool : baseCategories
+    return list[Math.floor(Math.random() * list.length)]
+  }
+  const pickStudent = () => {
+    if (!members.length) return null
+    const idx = Math.floor(Math.random() * members.length)
+    return members[idx] || null
+  }
+
+  try {
+    console.log('[API] POST /api/events/quarterly-batch', new Date().toISOString())
+    const used = new Set()
+    const tasks = Array.from({ length: count }).map(async (_value, index) => {
+      const category = pickCategory(index, used)
+      used.add(category)
+      const targetStudent = pickStudent()
+      const event = await generateQuarterEvent({
+        category,
+        mentor: payload.mentor,
+        stats: payload.stats,
+        team: payload.team,
+        year: payload.year,
+        quarter: payload.quarter,
+        targetStudent,
+      })
+      return {
+        category,
+        targetStudentId: typeof targetStudent?.id === 'string' ? targetStudent.id : null,
+        ...event,
+      }
+    })
+
+    const events = await Promise.all(tasks)
+    res.json({ events })
+  } catch (error) {
+    console.error('Quarterly batch event generation failed', error)
+    res.status(500).json({ error: '季度事件生成失败，请稍后再试。' })
+  }
+})
+
+app.post('/api/events/grant-review', async (req, res) => {
+  const payload = {
+    mentor: req.body?.mentor,
+    stats: req.body?.stats,
+    team: req.body?.team,
+    grant: req.body?.grant,
+    year: req.body?.year,
+    quarter: req.body?.quarter,
+    mode: req.body?.mode,
+  }
+
+  const mode = payload.mode === 'submission' ? 'submission' : 'review'
+
+  try {
+    console.log('[API] POST /api/events/grant-review', new Date().toISOString())
+    const event = await generateGrantEvent({
+      stage: 'review',
+      mode,
+      mentor: payload.mentor,
+      stats: payload.stats,
+      team: payload.team,
+      year: payload.year,
+      quarter: payload.quarter,
+      grant: payload.grant,
+    })
+    res.json(event)
+  } catch (error) {
+    console.error('Grant review event generation failed', error)
+    res.status(500).json({ error: '申报评审事件生成失败，请稍后再试。' })
+  }
+})
+
+app.post('/api/events/grant-execution', async (req, res) => {
+  const payload = {
+    mentor: req.body?.mentor,
+    stats: req.body?.stats,
+    team: req.body?.team,
+    grant: req.body?.grant,
+    year: req.body?.year,
+    quarter: req.body?.quarter,
+  }
+
+  try {
+    console.log('[API] POST /api/events/grant-execution', new Date().toISOString())
+    const event = await generateGrantEvent({
+      stage: 'execution',
+      mentor: payload.mentor,
+      stats: payload.stats,
+      team: payload.team,
+      year: payload.year,
+      quarter: payload.quarter,
+      grant: payload.grant,
+    })
+    res.json(event)
+  } catch (error) {
+    console.error('Grant execution event generation failed', error)
+    res.status(500).json({ error: '执行期事件生成失败，请稍后再试。' })
   }
 })
 

@@ -9,10 +9,22 @@ const parseList = (text) =>
     .map((item) => item.replace(/^[\-\d\.、\s]+/, '').trim())
     .filter(Boolean)
 
+const clampChineseLength = (text, minChars, maxChars) => {
+  const trimmed = String(text ?? '').trim()
+  if (!trimmed) return trimmed
+  if (trimmed.length <= maxChars) return trimmed
+
+  const sliced = trimmed.slice(0, maxChars)
+  const punctuations = ['。', '！', '？', '；', '，', '.', '!', '?', ';', ',']
+  const cutAt = punctuations.reduce((maxIndex, token) => Math.max(maxIndex, sliced.lastIndexOf(token)), -1)
+  if (cutAt >= Math.max(0, minChars - 1)) return sliced.slice(0, cutAt + 1)
+  return sliced
+}
+
 const buildSectionPrompts = ({ biographySeed, areas, recruitment, achievements }) => ({
   biography: {
-    prompt: `请用第一人称撰写一段 320-420 字的个人简历风格简介，语气真实克制、略带自嘲，保留“本人X、毕业背景、联合培养/实习经历、博士期间能力、入职讲师现状”等结构，不要空泛口号：${biographySeed}`,
-    parser: (text) => text.trim(),
+    prompt: `请用第一人称撰写一段 200-300 字的个人简历风格简介，语气真实克制、略带自嘲，结构清晰但不要分太多层，保留“本人X、毕业背景、联合培养/实习经历、博士期间能力、入职讲师现状”等信息，不要空泛口号：${biographySeed}`,
+    parser: (text) => clampChineseLength(text, 200, 300),
     fallback: biographySeed,
     maxOutputTokens: 1200,
   },
@@ -41,8 +53,8 @@ const buildSectionPrompts = ({ biographySeed, areas, recruitment, achievements }
     maxOutputTokens: 250,
   },
   motivation: {
-    prompt: `请写一段 420-650 字的自我激励，第一人称，语气宏大而克制，强调在数据驱动时代的使命感与技术敬畏，避免出现具体姓名或“老师”称谓。背景：${biographySeed}`,
-    parser: (text) => text.trim(),
+    prompt: `请写一段 200-300 字的自我激励，第一人称，语气宏大而克制，结构清晰但不要分太多层，强调在数据驱动时代的使命感与技术敬畏，避免出现具体姓名或“老师”称谓。背景：${biographySeed}`,
+    parser: (text) => clampChineseLength(text, 200, 300),
     fallback: biographySeed,
     maxOutputTokens: 1500,
   },

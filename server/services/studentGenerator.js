@@ -9,30 +9,138 @@ const traitCatalog = [
   { id: 'steady', name: '稳健派', category: 'main' },
   { id: 'social', name: '社交达人', category: 'main' },
   { id: 'coachable', name: '好带', category: 'main' },
-  { id: 'creative', name: '灵感型', category: 'main' },
-  { id: 'pragmatic', name: '务实派', category: 'main' },
-  { id: 'rebel', name: '特立独行', category: 'main' },
-  { id: 'average', name: '资质平平', category: 'main' },
+  { id: 'selfdriven', name: '自驱型', category: 'main' },
   { id: 'jinx', name: '倒霉蛋', category: 'main' },
-  { id: 'volatile', name: '心态不稳', category: 'main' },
-  { id: 'stubborn', name: '固执己见', category: 'main' },
   { id: 'slacker', name: '摸鱼', category: 'main' },
   { id: 'perpetual', name: '内卷永动机', category: 'sub' },
   { id: 'nightcoder', name: '深夜修复侠', category: 'sub' },
   { id: 'pptmaster', name: '幻灯片大师', category: 'sub' },
-  { id: 'coffee', name: '啡续命', category: 'sub' },
+  { id: 'coffee', name: '咖咖续命', category: 'sub' },
   { id: 'luckycat', name: '玄学转运家', category: 'sub' },
   { id: 'bughunter', name: 'Bug召唤者', category: 'sub' },
   { id: 'deadline', name: '死线战神', category: 'sub' },
   { id: 'overthink', name: '脑内风暴', category: 'sub' },
   { id: 'toughsoft', name: '嘴硬心软', category: 'sub' },
   { id: 'tidy', name: '桌面洁癖', category: 'sub' },
+  { id: 'paperpolisher', name: '论文抛光师', category: 'sub' },
+  { id: 'citationcleaner', name: '引用洁癖', category: 'sub' },
+  { id: 'bibhunter', name: '参考文献猎人', category: 'sub' },
+  { id: 'keywordsniper', name: '关键词狙击手', category: 'sub' },
+  { id: 'abstractsmith', name: '摘要锻造师', category: 'sub' },
+  { id: 'titlealchemy', name: '标题炼金术', category: 'sub' },
+  { id: 'introexploder', name: '引言爆破手', category: 'sub' },
+  { id: 'methodguardian', name: '方法守门员', category: 'sub' },
+  { id: 'controlmaster', name: '控制变量大师', category: 'sub' },
+  { id: 'ablationfan', name: '消融爱好者', category: 'sub' },
+  { id: 'figureartist', name: '图表美术生', category: 'sub' },
+  { id: 'chartwhisperer', name: '可视化低语者', category: 'sub' },
+  { id: 'colortrouble', name: '配色灾难家', category: 'sub' },
+  { id: 'latexknight', name: 'LaTeX骑士', category: 'sub' },
+  { id: 'formulafixer', name: '公式排版狂', category: 'sub' },
+  { id: 'reviewertranslator', name: '审稿翻译机', category: 'sub' },
+  { id: 'revisionmonk', name: '返修苦行僧', category: 'sub' },
+  { id: 'calmreviser', name: '冷静返修派', category: 'sub' },
+  { id: 'rejectionresistant', name: '退稿抗性体', category: 'sub' },
+  { id: 'scopecreep', name: '需求膨胀体', category: 'sub' },
+  { id: 'schedulepriest', name: '日程祭司', category: 'sub' },
+  { id: 'checklistaddict', name: '清单成瘾', category: 'sub' },
+  { id: 'notetaker', name: '会议速记员', category: 'sub' },
+  { id: 'stickywizard', name: '便签法师', category: 'sub' },
+  { id: 'backupkeeper', name: '备份守护者', category: 'sub' },
+  { id: 'cloudnomad', name: '云盘游牧民', category: 'sub' },
+  { id: 'usbghost', name: 'U盘失踪术', category: 'sub' },
+  { id: 'namingchaos', name: '命名灾难家', category: 'sub' },
+  { id: 'folderarchitect', name: '目录规划师', category: 'sub' },
+  { id: 'gitwanderer', name: 'Git迷路侠', category: 'sub' },
+  { id: 'branchgardener', name: '分支园丁', category: 'sub' },
+  { id: 'readmeevader', name: 'README逃避症', category: 'sub' },
+  { id: 'logkeeper', name: '记录强迫症', category: 'sub' },
+  { id: 'reproducibilitycop', name: '复现警察', category: 'sub' },
+  { id: 'seedkeeper', name: '随机种子守护者', category: 'sub' },
+  { id: 'envtamer', name: '环境驯兽师', category: 'sub' },
+  { id: 'dependencydiver', name: '依赖深潜者', category: 'sub' },
+  { id: 'versionhell', name: '版本地狱客', category: 'sub' },
+  { id: 'compilewhisperer', name: '编译器低语者', category: 'sub' },
+  { id: 'regexmage', name: '正则魔法师', category: 'sub' },
+  { id: 'scriptkid', name: '脚本小能手', category: 'sub' },
+  { id: 'pipelinebuilder', name: '流水线搭建者', category: 'sub' },
+  { id: 'datacleaner', name: '数据清洗狂', category: 'sub' },
+  { id: 'missingvaluedetective', name: '缺失值侦探', category: 'sub' },
+  { id: 'outlierwrangler', name: '离群点驯服者', category: 'sub' },
+  { id: 'samplingnerd', name: '抽样洁癖', category: 'sub' },
+  { id: 'smallsamplewarrior', name: '小样本勇士', category: 'sub' },
+  { id: 'largedatabeliever', name: '大样本信徒', category: 'sub' },
+  { id: 'pvalueaddict', name: '显著性执念', category: 'sub' },
+  { id: 'statsstoryteller', name: '统计讲故事', category: 'sub' },
+  { id: 'overfitprone', name: '过拟合体质', category: 'sub' },
+  { id: 'regularizationfan', name: '正则化信徒', category: 'sub' },
+  { id: 'abtestfan', name: 'A/B试验控', category: 'sub' },
+  { id: 'baselinerguard', name: 'Baseline守门员', category: 'sub' },
+  { id: 'hyperparamshaman', name: '超参玄学家', category: 'sub' },
+  { id: 'tuningmaniac', name: '调参狂魔', category: 'sub' },
+  { id: 'gpuwarden', name: 'GPU守夜人', category: 'sub' },
+  { id: 'clusterwhisperer', name: '集群低语者', category: 'sub' },
+  { id: 'queuefighter', name: '队列斗士', category: 'sub' },
+  { id: 'memoryleakprone', name: '内存泄漏体', category: 'sub' },
+  { id: 'segfaultmagnet', name: '段错误亲和体', category: 'sub' },
+  { id: 'quickfixer', name: '临时补丁派', category: 'sub' },
+  { id: 'refactoraddict', name: '重构洁癖', category: 'sub' },
+  { id: 'codepoet', name: '注释诗人', category: 'sub' },
+  { id: 'testskeptic', name: '测试不信者', category: 'sub' },
+  { id: 'unittestlover', name: '单测拥护者', category: 'sub' },
+  { id: 'docwriter', name: '文档写手', category: 'sub' },
+  { id: 'meetinghost', name: '组会主持人', category: 'sub' },
+  { id: 'pitchstar', name: '路演天赋', category: 'sub' },
+  { id: 'posterdesigner', name: '海报设计师', category: 'sub' },
+  { id: 'animationaddict', name: '动画上头', category: 'sub' },
+  { id: 'timekeeper', name: '掐点提交', category: 'sub' },
+  { id: 'deadlinepanic', name: '截止恐惧', category: 'sub' },
+  { id: 'procrastinator', name: '拖延症晚期', category: 'sub' },
+  { id: 'burstworker', name: '三天爆肝', category: 'sub' },
+  { id: 'inconsistent', name: '三分钟热度', category: 'sub' },
+  { id: 'earlybird', name: '早八战士', category: 'sub' },
+  { id: 'nightowl', name: '夜猫子', category: 'sub' },
+  { id: 'coffeeaddict', name: '咖啡过量', category: 'sub' },
+  { id: 'teadrinker', name: '茶水续航', category: 'sub' },
+  { id: 'snackoptimizer', name: '零食优化师', category: 'sub' },
+  { id: 'moodbuffer', name: '情绪缓冲垫', category: 'sub' },
+  { id: 'praiseengine', name: '夸夸发动机', category: 'sub' },
+  { id: 'conflictresolver', name: '冲突协调员', category: 'sub' },
+  { id: 'collaborationking', name: '横向合作王', category: 'sub' },
+  { id: 'crosscampusrunner', name: '跨院系穿梭者', category: 'sub' },
+  { id: 'resourcehunter', name: '资源猎手', category: 'sub' },
+  { id: 'grantwriter', name: '本子写作机', category: 'sub' },
+  { id: 'budgethawk', name: '经费小算盘', category: 'sub' },
+  { id: 'printerkiller', name: '打印机克星', category: 'sub' },
 ]
 
 const traitMap = new Map(traitCatalog.map((trait) => [trait.id, trait]))
 const traitNameMap = new Map(traitCatalog.map((trait) => [trait.name, trait.id]))
+traitNameMap.set('啡续命', 'coffee')
 const mainTraitIds = traitCatalog.filter((trait) => trait.category === 'main').map((trait) => trait.id)
 const subTraitIds = traitCatalog.filter((trait) => trait.category === 'sub').map((trait) => trait.id)
+
+const chunkBy = (items, size) => {
+  const chunks = []
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size))
+  }
+  return chunks
+}
+
+const formatTraitNameList = (names, chunkSize) =>
+  chunkBy(names, chunkSize)
+    .map((chunk) => chunk.join('、'))
+    .join('、\n')
+
+const mainTraitNameList = formatTraitNameList(
+  traitCatalog.filter((trait) => trait.category === 'main').map((trait) => trait.name),
+  12,
+)
+const subTraitNameList = formatTraitNameList(
+  traitCatalog.filter((trait) => trait.category === 'sub').map((trait) => trait.name),
+  16,
+)
 
 const sampleStudents = [
   {
@@ -95,7 +203,7 @@ const pickMany = (items, count) => {
 }
 
 const buildFallbackTraits = () => {
-  const main = pickOne(mainTraitIds) || 'average'
+  const main = pickOne(mainTraitIds) || 'steady'
   const subs = pickMany(subTraitIds, randomInt(2, 3))
   return [main, ...subs]
 }
@@ -150,8 +258,8 @@ const buildStudentPrompt = ({ mentor, department, researchFocus, count }) => {
 1. 只返回 JSON 数组，不要 Markdown。
 2. 学生均为研一（studentType 固定 MASTER，year 固定 1）。
 3. traits 使用人格型主特质 + 诙谐副特质组合，主特质只 1 个，副特质 2-3 个。
-4. 主特质可从：锦鲤、欧皇、卷王、学霸、稳健派、社交达人、好带、灵感型、务实派、特立独行、资质平平、倒霉蛋、心态不稳、固执己见、摸鱼 中选。
-5. 副特质可从：内卷永动机、深夜修复侠、幻灯片大师、啡续命、玄学转运家、Bug召唤者、死线战神、脑内风暴、嘴硬心软、桌面洁癖 中选。`
+4. 主特质可从：${mainTraitNameList} 中选。
+5. 副特质可从：${subTraitNameList} 中选。`
 }
 
 const clamp = (value, min = 0, max = 100) => Math.max(min, Math.min(max, Number(value) || 0))

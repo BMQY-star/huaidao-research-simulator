@@ -68,7 +68,7 @@ export const applyQuarterEffects = (stats: MentorStats): MentorStats => {
   const moraleDelta = stats.quarter === 4 ? -6 : -3
   const academiaDelta = stats.quarter === 1 ? 4 : stats.quarter === 3 ? 6 : 2
   const adminDelta = stats.quarter === 2 ? 5 : 1
-  const integrityDelta = stats.quarter === 3 ? 4 : 0
+  const integrityDelta = 0
   const fundingDelta = stats.quarter === 1 ? -5000 : stats.quarter === 2 ? -8000 : stats.quarter === 3 ? -1000 : 2000
   const reputationDelta = stats.academia.value > 70 ? 1 : 0
 
